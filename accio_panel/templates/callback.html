@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }}</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(25, 103, 210, 0.16), transparent 35%),
+        linear-gradient(180deg, #f7fbff 0%, #eef3f8 100%);
+      color: #14324a;
+    }
+
+    .card {
+      width: min(760px, calc(100% - 32px));
+      padding: 28px;
+      border-radius: 28px;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(255, 255, 255, 0.72);
+      box-shadow: 0 22px 50px rgba(23, 42, 58, 0.09);
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 34px;
+    }
+
+    p {
+      margin: 0;
+      color: #5b7287;
+      line-height: 1.7;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .item {
+      padding: 16px;
+      border-radius: 18px;
+      background: #f8fbfe;
+      border: 1px solid rgba(20, 50, 74, 0.06);
+    }
+
+    .label {
+      font-size: 12px;
+      color: #5b7287;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .value {
+      margin-top: 8px;
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .actions {
+      margin-top: 24px;
+    }
+  </style>
+</head>
+<body>
+  <section class="card">
+    <h1>{{ title }}</h1>
+    <p>{{ message }}</p>
+
+    {% if account %}
+    <div class="grid">
+      <div class="item">
+        <div class="label">账号名</div>
+        <div class="value">{{ account.name }}</div>
+      </div>
+      <div class="item">
+        <div class="label">Access Token</div>
+        <div class="value">{{ account.access_token }}</div>
+      </div>
+      <div class="item">
+        <div class="label">UTDID</div>
+        <div class="value">{{ account.utdid }}</div>
+      </div>
+      <div class="item">
+        <div class="label">Token 过期</div>
+        <div class="value">{{ account.expires_at_text }}</div>
+      </div>
+      <div class="item">
+        <div class="label">剩余额度</div>
+        <div class="value">
+          {% if quota %}
+            {{ quota.remaining_text }}
+          {% else %}
+            未知
+          {% endif %}
+        </div>
+      </div>
+      <div class="item">
+        <div class="label">保存时间</div>
+        <div class="value">{{ account.added_at }}</div>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="actions">
+      <p>当前页面仅展示本次回调账号信息。如需管理其他账号，请在面板输入管理员密码后操作。</p>
+    </div>
+  </section>
+</body>
+</html>

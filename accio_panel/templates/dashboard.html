@@ -1,0 +1,1355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ page_title }}</title>
+  <style>
+    :root {
+      --bg: #eef3f8;
+      --panel: rgba(255, 255, 255, 0.88);
+      --line: rgba(33, 53, 71, 0.08);
+      --text: #14324a;
+      --muted: #5b7287;
+      --brand: #1967d2;
+      --green: #12805c;
+      --orange: #b7791f;
+      --red: #c84646;
+      --shadow: 0 24px 60px rgba(23, 42, 58, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(37, 111, 255, 0.18), transparent 28%),
+        radial-gradient(circle at top right, rgba(24, 128, 92, 0.14), transparent 24%),
+        linear-gradient(180deg, #f7fbff 0%, var(--bg) 100%);
+    }
+
+    .shell {
+      width: min(1200px, calc(100% - 32px));
+      margin: 28px auto 40px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 28px;
+      border: 1px solid rgba(255, 255, 255, 0.72);
+      border-radius: 24px;
+      background:
+        linear-gradient(135deg, rgba(16, 86, 170, 0.96), rgba(20, 50, 74, 0.92));
+      box-shadow: var(--shadow);
+      color: #ffffff;
+    }
+
+    .hero h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 42px);
+      line-height: 1.1;
+      letter-spacing: 0.02em;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 760px;
+      color: rgba(255, 255, 255, 0.78);
+      line-height: 1.6;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .stat {
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(8px);
+    }
+
+    .stat-label {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.68);
+    }
+
+    .stat-value {
+      margin-top: 8px;
+      font-size: 20px;
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin: 22px 0 20px;
+    }
+
+    .button,
+    .link-button {
+      appearance: none;
+      border: none;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 120ms ease;
+    }
+
+    .button:hover,
+    .link-button:hover {
+      transform: translateY(-1px);
+    }
+
+    .button.primary,
+    .link-button.primary {
+      background: var(--brand);
+      color: #ffffff;
+    }
+
+    .button.secondary,
+    .link-button.secondary {
+      background: rgba(20, 50, 74, 0.08);
+      color: var(--text);
+    }
+
+    .button.success {
+      background: #dff6ed;
+      color: var(--green);
+    }
+
+    .panel {
+      border-radius: 24px;
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, 0.72);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      backdrop-filter: blur(16px);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      background: rgba(20, 50, 74, 0.03);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .account-name {
+      font-weight: 700;
+    }
+
+    .account-head,
+    .quota-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .status-chip.enabled {
+      background: #def7ec;
+      color: var(--green);
+    }
+
+    .status-chip.manual {
+      background: rgba(20, 50, 74, 0.1);
+      color: var(--text);
+    }
+
+    .status-chip.auto {
+      background: #ffe1e1;
+      color: var(--red);
+    }
+
+    .quota {
+      min-width: 160px;
+    }
+
+    .quota-main {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .quota-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .quota-badge.low {
+      background: #def7ec;
+      color: var(--green);
+    }
+
+    .quota-badge.medium {
+      background: #fff4dc;
+      color: var(--orange);
+    }
+
+    .quota-badge.high,
+    .quota-badge.error {
+      background: #ffe1e1;
+      color: var(--red);
+    }
+
+    .progress {
+      margin-top: 10px;
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(20, 50, 74, 0.08);
+      overflow: hidden;
+    }
+
+    .progress > span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #3aa8ff, #1967d2);
+    }
+
+    .progress.high > span {
+      background: linear-gradient(90deg, #ff928b, #c84646);
+    }
+
+    .progress.medium > span {
+      background: linear-gradient(90deg, #ffd37d, #b7791f);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .action {
+      border: none;
+      border-radius: 999px;
+      padding: 9px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      background: rgba(20, 50, 74, 0.07);
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .action.danger {
+      background: #ffe1e1;
+      color: var(--red);
+    }
+
+    .mini-action {
+      border: none;
+      border-radius: 999px;
+      padding: 8px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      background: rgba(20, 50, 74, 0.08);
+      color: var(--text);
+    }
+
+    .empty {
+      padding: 44px 20px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      min-width: 220px;
+      max-width: 360px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(20, 50, 74, 0.92);
+      color: #ffffff;
+      box-shadow: 0 20px 40px rgba(23, 42, 58, 0.22);
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+      transition: all 180ms ease;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .panel-switch {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+
+    .switch-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 11px 18px;
+      border-radius: 999px;
+      text-decoration: none;
+      font-weight: 700;
+      color: rgba(255, 255, 255, 0.84);
+      background: rgba(255, 255, 255, 0.10);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+    }
+
+    .switch-link.active {
+      color: #10375c;
+      background: #f4fbff;
+      border-color: transparent;
+    }
+
+    .table-controls,
+    .batch-bar,
+    .pager {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .table-controls {
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding: 22px 22px 0;
+    }
+
+    .batch-bar {
+      margin: 0 22px 16px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(21, 52, 80, 0.05);
+      border: 1px solid rgba(20, 50, 74, 0.08);
+    }
+
+    .batch-label {
+      font-size: 13px;
+      color: #4f6373;
+      font-weight: 700;
+    }
+
+    .inline-select {
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(20, 50, 74, 0.12);
+      background: rgba(255, 255, 255, 0.9);
+      color: #14324a;
+    }
+
+    .select-col {
+      width: 42px;
+      text-align: center;
+    }
+
+    .check-cell {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
+    .pager {
+      justify-content: space-between;
+      margin: 0 22px;
+      padding: 18px 0 22px;
+      border-top: 1px solid rgba(20, 50, 74, 0.08);
+    }
+
+    .pager-links {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .page-link {
+      display: inline-flex;
+      min-width: 38px;
+      height: 38px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      text-decoration: none;
+      color: #14324a;
+      background: rgba(21, 52, 80, 0.06);
+      border: 1px solid transparent;
+      font-weight: 700;
+    }
+
+    .page-link.active {
+      color: #fff;
+      background: linear-gradient(135deg, #0f6adf, #13a0f5);
+    }
+
+    .settings-panel {
+      display: grid;
+      gap: 18px;
+      padding: 22px;
+    }
+
+    .settings-note {
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(21, 52, 80, 0.05);
+      border: 1px solid rgba(20, 50, 74, 0.08);
+      color: #4f6373;
+      line-height: 1.7;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      padding: 22px 22px 0;
+    }
+
+    .summary-card {
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(20, 50, 74, 0.04);
+      border: 1px solid rgba(20, 50, 74, 0.08);
+    }
+
+    .summary-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .summary-value {
+      margin-top: 8px;
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--text);
+    }
+
+    .stats-section {
+      padding: 22px;
+      border-top: 1px solid rgba(20, 50, 74, 0.08);
+    }
+
+    .stats-section-title {
+      font-size: 18px;
+      font-weight: 800;
+      margin-bottom: 14px;
+    }
+
+    .stats-table-wrap {
+      overflow-x: auto;
+      border-radius: 18px;
+      border: 1px solid rgba(20, 50, 74, 0.08);
+    }
+
+    .stats-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+    }
+
+    .stats-table th,
+    .stats-table td {
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(20, 50, 74, 0.08);
+      text-align: left;
+      font-size: 14px;
+    }
+
+    .stats-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(10, 20, 30, 0.35);
+      z-index: 20;
+    }
+
+    .modal.show {
+      display: flex;
+    }
+
+    .modal-card {
+      width: min(860px, 100%);
+      max-height: calc(100vh - 40px);
+      overflow: auto;
+      border-radius: 24px;
+      background: #ffffff;
+      box-shadow: 0 26px 60px rgba(23, 42, 58, 0.18);
+      padding: 24px;
+    }
+
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .modal-title {
+      font-size: 24px;
+      font-weight: 800;
+    }
+
+    .modal-close {
+      border: none;
+      background: rgba(20, 50, 74, 0.08);
+      color: var(--text);
+      border-radius: 999px;
+      width: 36px;
+      height: 36px;
+      cursor: pointer;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+    }
+
+    .detail-item {
+      padding: 14px;
+      border-radius: 16px;
+      background: #f8fbfe;
+      border: 1px solid rgba(20, 50, 74, 0.06);
+    }
+
+    .detail-label {
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .detail-value {
+      margin-top: 8px;
+      font-weight: 700;
+      line-height: 1.6;
+      word-break: break-all;
+    }
+
+    .settings-grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .settings-label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .settings-input {
+      width: 100%;
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(20, 50, 74, 0.12);
+      font-size: 14px;
+    }
+
+    .check-row {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    @media (max-width: 900px) {
+      .panel {
+        overflow-x: auto;
+      }
+
+      table {
+        min-width: 960px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <h1>Accio 多账号管理面板</h1>
+      <p>
+        支持登录链接生成、FastAPI 登录回调、账号本地持久化、
+        Token 刷新和额度状态查看。
+      </p>
+
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-label">账号总数</div>
+          <div class="stat-value">{{ account_count }}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">回调地址</div>
+          <div class="stat-value">{{ callback_url }}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">API 网关</div>
+          <div class="stat-value">{{ base_url }}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">版本</div>
+          <div class="stat-value">{{ version }}</div>
+        </div>
+      </div>
+
+      <div class="meta" style="margin-top: 16px; color: rgba(255,255,255,0.75);">
+        自动禁用: {{ "开启" if auto_disable_on_empty_quota else "关闭" }} /
+        自动恢复: {{ "开启" if auto_enable_on_recovered_quota else "关闭" }}<br>
+        API 路径: {{ api_base_url }}/v1/messages<br>
+        模型: {{ supported_models_text }} / 调度策略: {{ api_account_strategy_label }} / API Key: 管理员密码<br>
+        上游代理: {{ upstream_proxy_url or "未配置" }}
+      </div>
+
+      <div class="panel-switch">
+        <a class="switch-link {% if current_view == 'accounts' %}active{% endif %}" href="/dashboard?view=accounts&page=1&pageSize={{ page_size }}">账号列表</a>
+        <a class="switch-link {% if current_view == 'settings' %}active{% endif %}" href="/dashboard?view=settings&page=1&pageSize={{ page_size }}">配置中心</a>
+        <a class="switch-link {% if current_view == 'stats' %}active{% endif %}" href="/dashboard?view=stats&page=1&pageSize={{ page_size }}">统计界面</a>
+      </div>
+    </section>
+
+    <section class="toolbar">
+      <a class="link-button primary" href="/login" target="_blank" rel="noreferrer">打开登录页</a>
+      <button class="button secondary" type="button" onclick="copyLoginLink()">复制登录链接</button>
+      <button class="button success" type="button" onclick="refreshAll()">刷新全部 Token</button>
+      <a class="link-button secondary" href="/dashboard?view=settings&page=1&pageSize={{ page_size }}">配置中心</a>
+      <a class="link-button secondary" href="/dashboard?view=accounts&page={{ current_page }}&pageSize={{ page_size }}">账号区域</a>
+      <a class="link-button secondary" href="/dashboard?view=stats&page=1&pageSize={{ page_size }}">统计界面</a>
+      <button class="button secondary" type="button" onclick="logoutAdmin()">退出登录</button>
+      <a class="link-button secondary" href="/dashboard?view={{ current_view }}&page={{ current_page }}&pageSize={{ page_size }}">刷新面板</a>
+    </section>
+
+    <section class="panel">
+      {% if current_view == "stats" %}
+      <div class="summary-grid">
+        <div class="summary-card">
+          <div class="summary-label">总调用次数</div>
+          <div class="summary-value">{{ usage_stats.totals.calls }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">成功调用</div>
+          <div class="summary-value">{{ usage_stats.totals.successCalls }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">失败调用</div>
+          <div class="summary-value">{{ usage_stats.totals.failedCalls }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">输入 Tokens</div>
+          <div class="summary-value">{{ usage_stats.totals.inputTokens }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">输出 Tokens</div>
+          <div class="summary-value">{{ usage_stats.totals.outputTokens }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">最近更新</div>
+          <div class="summary-value" style="font-size:16px;">{{ usage_stats.updatedAt }}</div>
+        </div>
+      </div>
+
+      <div class="stats-section">
+        <div class="stats-section-title">按模型统计</div>
+        {% if usage_stats.models %}
+        <div class="stats-table-wrap">
+          <table class="stats-table">
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th>调用次数</th>
+                <th>成功</th>
+                <th>失败</th>
+                <th>输入 Tokens</th>
+                <th>输出 Tokens</th>
+                <th>最近调用</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in usage_stats.models %}
+              <tr>
+                <td>{{ item.name }}</td>
+                <td>{{ item.calls }}</td>
+                <td>{{ item.successCalls }}</td>
+                <td>{{ item.failedCalls }}</td>
+                <td>{{ item.inputTokens }}</td>
+                <td>{{ item.outputTokens }}</td>
+                <td>{{ item.lastUsedAt }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="empty">还没有任何 `/v1/messages` 调用统计。</div>
+        {% endif %}
+      </div>
+
+      <div class="stats-section">
+        <div class="stats-section-title">按账号统计</div>
+        {% if usage_stats.accounts %}
+        <div class="stats-table-wrap">
+          <table class="stats-table">
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th>调用次数</th>
+                <th>成功</th>
+                <th>失败</th>
+                <th>输入 Tokens</th>
+                <th>输出 Tokens</th>
+                <th>最近调用</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in usage_stats.accounts %}
+              <tr>
+                <td>{{ item.name }}</td>
+                <td>{{ item.calls }}</td>
+                <td>{{ item.successCalls }}</td>
+                <td>{{ item.failedCalls }}</td>
+                <td>{{ item.inputTokens }}</td>
+                <td>{{ item.outputTokens }}</td>
+                <td>{{ item.lastUsedAt }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="empty">还没有可展示的账号维度统计。</div>
+        {% endif %}
+      </div>
+      {% elif current_view == "settings" %}
+      <div class="settings-panel">
+        <div class="settings-note">
+          当前回调地址：<strong>{{ callback_url }}</strong><br>
+          Anthropic 兼容 API：<strong>{{ api_base_url }}/v1/models</strong> / <strong>{{ api_base_url }}/v1/messages</strong><br>
+          调用鉴权使用 <code>x-api-key</code> 或 <code>Authorization: Bearer</code>，值为当前管理员密码。<br>
+          上游代理支持 <code>http://</code>、<code>https://</code>、<code>socks5://</code>、<code>socks5h://</code>、<code>socks4://</code>、<code>socks4a://</code>。
+        </div>
+        <div class="settings-grid">
+          <div>
+            <label class="settings-label" for="settings-public-base-url">公开回调基础地址</label>
+            <input id="settings-public-base-url" class="settings-input" type="text" value="{{ public_base_url }}" placeholder="例如 https://your-domain.com">
+            <div class="meta" style="margin-top:8px;">留空时默认使用本地地址，当前回调地址会自动拼接 `/auth/callback`。</div>
+          </div>
+          <div>
+            <label class="settings-label" for="settings-upstream-proxy-url">上游代理地址</label>
+            <input id="settings-upstream-proxy-url" class="settings-input" type="text" value="{{ upstream_proxy_url }}" placeholder="例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
+            <div class="meta" style="margin-top:8px;">只影响服务端访问 Accio 网关，不影响浏览器打开登录页。使用 SOCKS 代理时建议填 <code>socks5h://</code> 以便由代理端解析域名。</div>
+          </div>
+          <div>
+            <label class="settings-label" for="settings-admin-password">管理员密码</label>
+            <input id="settings-admin-password" class="settings-input" type="text" value="{{ admin_password }}">
+          </div>
+          <div>
+            <label class="settings-label" for="settings-api-account-strategy">API 调度策略</label>
+            <select id="settings-api-account-strategy" class="settings-input">
+              <option value="fill" {% if api_account_strategy == "fill" %}selected{% endif %}>优先填充</option>
+              <option value="round_robin" {% if api_account_strategy == "round_robin" %}selected{% endif %}>轮询</option>
+            </select>
+            <div class="meta" style="margin-top:8px;">优先填充会持续使用顺序靠前的可用账号，额度用完再切到下一个；轮询会在可用账号之间轮转。</div>
+          </div>
+          <label class="check-row">
+            <input id="settings-auto-disable" type="checkbox" {% if auto_disable_on_empty_quota %}checked{% endif %}>
+            <span>额度耗尽后自动禁用账号</span>
+          </label>
+          <label class="check-row">
+            <input id="settings-auto-enable" type="checkbox" {% if auto_enable_on_recovered_quota %}checked{% endif %}>
+            <span>额度恢复后自动启用账号</span>
+          </label>
+        </div>
+        <div class="actions">
+          <button class="button primary" type="button" onclick="saveSettings()">保存配置</button>
+          <a class="link-button secondary" href="/dashboard?view=accounts&page=1&pageSize={{ page_size }}">返回账号区域</a>
+        </div>
+      </div>
+      {% elif accounts %}
+      <div class="table-controls">
+        <div class="meta">当前显示第 {{ current_page }} / {{ total_pages }} 页，账号 {{ page_start_index }} - {{ page_end_index }} / {{ account_count }}</div>
+        <label class="meta">
+          每页显示
+          <select id="page-size-select" class="inline-select" onchange="changePageSize()">
+            {% for option in page_size_options %}
+            <option value="{{ option }}" {% if option == page_size %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+
+      <div class="batch-bar">
+        <label class="batch-label">
+          <input id="select-all-checkbox" class="check-cell" type="checkbox" onchange="toggleAllAccounts(this.checked)">
+          全选当前页
+        </label>
+        <div class="batch-label">已选 <span id="selected-count">0</span> 个账号</div>
+        <button class="action" type="button" onclick="runBatchAction('refresh_token')">批量刷新 Token</button>
+        <button class="action" type="button" onclick="runBatchAction('refresh_quota')">批量刷新额度</button>
+        <button class="action" type="button" onclick="runBatchAction('enable')">批量启用</button>
+        <button class="action" type="button" onclick="runBatchAction('disable')">批量禁用</button>
+        <button class="action danger" type="button" onclick="runBatchAction('delete', true)">批量删除</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th class="select-col"></th>
+            <th>账号</th>
+            <th>Token</th>
+            <th>剩余额度</th>
+            <th>过期时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for account in accounts %}
+          <tr>
+            <td class="select-col">
+              <input class="check-cell account-selector" type="checkbox" value="{{ account.id }}" onchange="updateSelectedState()">
+            </td>
+            <td>
+              <div class="account-head">
+                <div class="account-name" id="account-name-{{ account.id }}">{{ account.name }}</div>
+                <button class="mini-action" type="button" onclick='renameAccount({{ account.id|tojson }}, {{ account.name|tojson }})'>重命名</button>
+              </div>
+              <div class="status-chip {{ account.status.level }}" id="status-chip-{{ account.id }}">
+                {{ account.status.label }}
+              </div>
+              <div class="meta" id="status-hint-{{ account.id }}">{{ account.status.hint }}</div>
+              <div class="meta">UTDID: {{ account.utdid }}</div>
+              <div class="meta">新增: {{ account.added_at }}</div>
+              <div class="meta" id="account-updated-{{ account.id }}">更新: {{ account.updated_at }}</div>
+            </td>
+            <td>
+              <div class="meta">{{ account.masked_access_token }}</div>
+            </td>
+            <td class="quota">
+              <div class="quota-head">
+                <div class="quota-main">
+                  <span class="quota-badge {{ account.quota.level }}" id="quota-badge-{{ account.id }}">
+                    {{ account.quota.remaining_text }}
+                  </span>
+                </div>
+                <button class="mini-action" type="button" onclick='refreshQuota({{ account.id|tojson }}, {{ account.name|tojson }})'>刷新额度</button>
+              </div>
+              <div class="progress {{ account.quota.level }}" id="quota-progress-{{ account.id }}">
+                <span id="quota-progress-bar-{{ account.id }}" style="width: {{ account.quota.remaining_value }}%"></span>
+              </div>
+              <div class="meta" style="margin-top: 10px;" id="quota-reset-{{ account.id }}">
+                重置时间: {{ account.quota.reset_text }}
+              </div>
+              <div class="meta" id="quota-used-{{ account.id }}">
+                已使用: {{ account.quota.used_text }}
+              </div>
+              <div class="meta" id="quota-message-{{ account.id }}">
+                {% if account.quota.message %}{{ account.quota.message }}{% endif %}
+              </div>
+            </td>
+            <td>
+              <div class="meta">{{ account.expires_at_text }}</div>
+            </td>
+            <td>
+              <div class="actions">
+                <button class="action" type="button" id="toggle-action-{{ account.id }}" onclick='toggleAccountEnabled({{ account.id|tojson }}, {{ (not account.manual_enabled)|tojson }}, {{ account.name|tojson }})'>
+                  {{ "手动启用" if not account.manual_enabled else "手动禁用" }}
+                </button>
+                <button class="action" type="button" onclick='refreshOne({{ account.id|tojson }}, {{ account.name|tojson }})'>刷新 Token</button>
+                <button class="action" type="button" onclick='openDetailModal({{ account.id|tojson }})'>查看详情</button>
+                <a class="action" href="/api/accounts/{{ account.id }}/download">下载 JSON</a>
+                <button class="action danger" type="button" onclick='deleteAccount({{ account.id|tojson }}, {{ account.name|tojson }})'>删除</button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="pager">
+        <div class="meta">共 {{ total_pages }} 页</div>
+        <div class="pager-links">
+          <a class="page-link" href="/dashboard?view=accounts&page={{ 1 if current_page <= 1 else current_page - 1 }}&pageSize={{ page_size }}">上一页</a>
+          {% for number in page_numbers %}
+          <a class="page-link {% if number == current_page %}active{% endif %}" href="/dashboard?view=accounts&page={{ number }}&pageSize={{ page_size }}">{{ number }}</a>
+          {% endfor %}
+          <a class="page-link" href="/dashboard?view=accounts&page={{ total_pages if current_page >= total_pages else current_page + 1 }}&pageSize={{ page_size }}">下一页</a>
+        </div>
+      </div>
+      {% else %}
+      <div class="empty">
+        <div style="font-size: 18px; font-weight: 700; margin-bottom: 8px;">还没有账号</div>
+        <div>点击上方“打开登录页”完成授权，回调成功后会自动出现在这里。</div>
+      </div>
+      {% endif %}
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <div id="detail-modal" class="modal" onclick="closeModalOnMask(event, 'detail-modal')">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div class="modal-title" id="detail-title">账号详情</div>
+        <button class="modal-close" type="button" onclick="closeModal('detail-modal')">×</button>
+      </div>
+      <div class="detail-grid" id="detail-grid"></div>
+      <div class="actions" style="margin-top:16px;">
+        <a id="detail-download" class="action" href="#">下载 JSON</a>
+        <button class="action" type="button" onclick="closeModal('detail-modal')">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function openModal(id) {
+      document.getElementById(id).classList.add('show');
+    }
+
+    function closeModal(id) {
+      document.getElementById(id).classList.remove('show');
+    }
+
+    function closeModalOnMask(event, id) {
+      if (event.target.id === id) {
+        closeModal(id);
+      }
+    }
+
+    function selectedAccountIds() {
+      return Array.from(document.querySelectorAll('.account-selector:checked')).map((item) => item.value);
+    }
+
+    function updateSelectedState() {
+      const selected = selectedAccountIds();
+      const count = document.getElementById('selected-count');
+      const selectAll = document.getElementById('select-all-checkbox');
+      const selectors = Array.from(document.querySelectorAll('.account-selector'));
+      if (count) {
+        count.textContent = String(selected.length);
+      }
+      if (selectAll) {
+        selectAll.checked = selectors.length > 0 && selected.length === selectors.length;
+      }
+    }
+
+    function toggleAllAccounts(checked) {
+      document.querySelectorAll('.account-selector').forEach((item) => {
+        item.checked = checked;
+      });
+      updateSelectedState();
+    }
+
+    function changePageSize() {
+      const select = document.getElementById('page-size-select');
+      if (!select) {
+        return;
+      }
+      const url = new URL(window.location.href);
+      url.searchParams.set('view', 'accounts');
+      url.searchParams.set('page', '1');
+      url.searchParams.set('pageSize', select.value);
+      window.location.href = url.toString();
+    }
+
+    async function runBatchAction(action, confirmDelete = false) {
+      const accountIds = selectedAccountIds();
+      if (!accountIds.length) {
+        showToast('请先选择至少一个账号');
+        return;
+      }
+      if (confirmDelete && !window.confirm(`确认批量删除这 ${accountIds.length} 个账号吗？`)) {
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/accounts/batch', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ action, accountIds })
+        });
+        const payload = await response.json();
+        if (payload.failures && payload.failures.length) {
+          showToast(`${payload.message || '批量操作完成'}，失败 ${payload.failures.length} 个`);
+        } else {
+          showToast(payload.message || '批量操作完成');
+        }
+        if (payload.success || payload.processedCount) {
+          window.setTimeout(() => window.location.reload(), 500);
+        }
+      } catch (error) {
+        console.error(error);
+        showToast('批量操作失败，请稍后重试');
+      }
+    }
+
+    async function logoutAdmin() {
+      try {
+        const response = await fetch('/api/auth/logout', {
+          method: 'POST'
+        });
+        const payload = await response.json();
+        showToast(payload.message || '已退出登录');
+        window.setTimeout(() => window.location.reload(), 300);
+      } catch (error) {
+        console.error(error);
+        showToast('退出失败，请稍后重试');
+      }
+    }
+
+    async function copyLoginLink() {
+      try {
+        const response = await fetch('/api/login-link');
+        const payload = await response.json();
+        if (!payload.success) {
+          showToast(payload.message || '获取登录链接失败');
+          return;
+        }
+        await navigator.clipboard.writeText(payload.url);
+        showToast('登录链接已复制到剪贴板');
+      } catch (error) {
+        console.error(error);
+        showToast('复制失败，请直接打开登录页');
+      }
+    }
+
+    async function refreshOne(accountId, accountName) {
+      try {
+        showToast(`正在刷新 ${accountName} ...`);
+        const response = await fetch(`/api/accounts/${accountId}/refresh`, {
+          method: 'POST'
+        });
+        const payload = await response.json();
+        showToast(payload.message || '刷新完成');
+        if (payload.success) {
+          window.setTimeout(() => window.location.reload(), 600);
+        }
+      } catch (error) {
+        console.error(error);
+        showToast('刷新失败，请稍后重试');
+      }
+    }
+
+    async function refreshAll() {
+      try {
+        showToast('正在批量刷新 Token ...');
+        const response = await fetch('/api/accounts/refresh-all', {
+          method: 'POST'
+        });
+        const payload = await response.json();
+        if (payload.failures && payload.failures.length) {
+          showToast(`${payload.message}，失败 ${payload.failures.length} 个`);
+        } else {
+          showToast(payload.message || '刷新完成');
+        }
+        window.setTimeout(() => window.location.reload(), 800);
+      } catch (error) {
+        console.error(error);
+        showToast('批量刷新失败，请稍后重试');
+      }
+    }
+
+    async function openDetailModal(accountId) {
+      try {
+        const response = await fetch(`/api/accounts/${accountId}/detail`);
+        const payload = await response.json();
+        if (!payload.success) {
+          showToast(payload.message || '获取详情失败');
+          return;
+        }
+
+        const account = payload.account;
+        const quota = payload.quota;
+        document.getElementById('detail-title').textContent = `${account.name} 详情`;
+        document.getElementById('detail-download').href = `/api/accounts/${account.id}/download`;
+
+        const items = [
+          ['账号名', account.name],
+          ['UTDID', account.utdid],
+          ['Access Token', account.accessToken],
+          ['Refresh Token', account.refreshToken],
+          ['状态', account.status.label],
+          ['状态说明', account.status.hint],
+          ['剩余额度', `${quota.remaining_text} / ${quota.reset_text}`],
+          ['已使用', quota.used_text],
+          ['Token 过期', account.expiresAtText],
+          ['添加时间', account.addedAt],
+          ['更新时间', account.updatedAt],
+          ['上次额度检查', account.lastQuotaCheckAt],
+          ['下次额度检查', account.nextQuotaCheckAt],
+          ['检查原因', account.nextQuotaCheckReason]
+        ];
+
+        const grid = document.getElementById('detail-grid');
+        grid.innerHTML = items.map(([label, value]) => `
+          <div class="detail-item">
+            <div class="detail-label">${escapeHtml(label)}</div>
+            <div class="detail-value">${escapeHtml(value || '-')}</div>
+          </div>
+        `).join('');
+        openModal('detail-modal');
+      } catch (error) {
+        console.error(error);
+        showToast('获取详情失败，请稍后重试');
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    async function saveSettings() {
+      const publicBaseUrl = document.getElementById('settings-public-base-url').value.trim();
+      const upstreamProxyUrl = document.getElementById('settings-upstream-proxy-url').value.trim();
+      const adminPassword = document.getElementById('settings-admin-password').value.trim();
+      const apiAccountStrategy = document.getElementById('settings-api-account-strategy').value;
+      const autoDisableOnEmptyQuota = document.getElementById('settings-auto-disable').checked;
+      const autoEnableOnRecoveredQuota = document.getElementById('settings-auto-enable').checked;
+
+      try {
+        const response = await fetch('/api/settings', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            publicBaseUrl,
+            upstreamProxyUrl,
+            adminPassword,
+            apiAccountStrategy,
+            autoDisableOnEmptyQuota,
+            autoEnableOnRecoveredQuota
+          })
+        });
+        const payload = await response.json();
+        showToast(payload.message || '设置已保存');
+        if (payload.success) {
+          window.setTimeout(() => window.location.reload(), 300);
+        }
+      } catch (error) {
+        console.error(error);
+        showToast('保存配置失败，请稍后重试');
+      }
+    }
+
+    async function deleteAccount(accountId, accountName) {
+      const confirmed = window.confirm(`确认删除 ${accountName} 吗？`);
+      if (!confirmed) {
+        return;
+      }
+      try {
+        const response = await fetch(`/api/accounts/${accountId}`, {
+          method: 'DELETE'
+        });
+        const payload = await response.json();
+        showToast(payload.message || '删除完成');
+        if (payload.success) {
+          window.setTimeout(() => window.location.reload(), 500);
+        }
+      } catch (error) {
+        console.error(error);
+        showToast('删除失败，请稍后重试');
+      }
+    }
+
+    async function renameAccount(accountId, currentName) {
+      const nextName = window.prompt('请输入新的账号名称', currentName || '');
+      if (nextName === null) {
+        return;
+      }
+      const trimmedName = nextName.trim();
+      if (!trimmedName) {
+        showToast('账号名称不能为空');
+        return;
+      }
+      try {
+        const response = await fetch(`/api/accounts/${accountId}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ name: trimmedName })
+        });
+        const payload = await response.json();
+        showToast(payload.message || '重命名完成');
+        if (!payload.success) {
+          return;
+        }
+        const nameElement = document.getElementById(`account-name-${accountId}`);
+        const updatedElement = document.getElementById(`account-updated-${accountId}`);
+        if (nameElement) {
+          nameElement.textContent = payload.account.name;
+        }
+        if (updatedElement) {
+          updatedElement.textContent = `更新: ${payload.account.updatedAt}`;
+        }
+        window.setTimeout(() => window.location.reload(), 300);
+      } catch (error) {
+        console.error(error);
+        showToast('重命名失败，请稍后重试');
+      }
+    }
+
+    async function refreshQuota(accountId, accountName) {
+      try {
+        showToast(`正在刷新 ${accountName} 的额度 ...`);
+        const response = await fetch(`/api/accounts/${accountId}/quota`);
+        const payload = await response.json();
+        if (!payload.success && !payload.quota) {
+          showToast(payload.message || '额度刷新失败');
+          return;
+        }
+        updateQuotaView(accountId, payload.quota);
+        if (payload.status) {
+          updateStatusView(accountId, payload.status);
+        }
+        showToast(payload.message || '额度已刷新');
+      } catch (error) {
+        console.error(error);
+        showToast('额度刷新失败，请稍后重试');
+      }
+    }
+
+    async function toggleAccountEnabled(accountId, nextEnabled, accountName) {
+      try {
+        const response = await fetch(`/api/accounts/${accountId}/enabled`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ enabled: nextEnabled })
+        });
+        const payload = await response.json();
+        showToast(payload.message || '状态已更新');
+        if (payload.success) {
+          window.setTimeout(() => window.location.reload(), 350);
+        }
+      } catch (error) {
+        console.error(error);
+        showToast(`更新 ${accountName} 状态失败`);
+      }
+    }
+
+    function updateQuotaView(accountId, quota) {
+      const badge = document.getElementById(`quota-badge-${accountId}`);
+      const progress = document.getElementById(`quota-progress-${accountId}`);
+      const progressBar = document.getElementById(`quota-progress-bar-${accountId}`);
+      const reset = document.getElementById(`quota-reset-${accountId}`);
+      const used = document.getElementById(`quota-used-${accountId}`);
+      const message = document.getElementById(`quota-message-${accountId}`);
+
+      if (badge) {
+        badge.className = `quota-badge ${quota.level}`;
+        badge.textContent = quota.remaining_text;
+      }
+      if (progress) {
+        progress.className = `progress ${quota.level}`;
+      }
+      if (progressBar) {
+        progressBar.style.width = `${quota.remaining_value}%`;
+      }
+      if (reset) {
+        reset.textContent = `重置时间: ${quota.reset_text}`;
+      }
+      if (used) {
+        used.textContent = `已使用: ${quota.used_text}`;
+      }
+      if (message) {
+        message.textContent = quota.message || '';
+      }
+    }
+
+    function updateStatusView(accountId, status) {
+      const chip = document.getElementById(`status-chip-${accountId}`);
+      const hint = document.getElementById(`status-hint-${accountId}`);
+      if (chip) {
+        chip.className = `status-chip ${status.level}`;
+        chip.textContent = status.label;
+      }
+      if (hint) {
+        hint.textContent = status.hint || '';
+      }
+    }
+
+    function showToast(text) {
+      const toast = document.getElementById('toast');
+      toast.textContent = text;
+      toast.classList.add('show');
+      window.clearTimeout(window.__accioToastTimer);
+      window.__accioToastTimer = window.setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2600);
+    }
+
+    updateSelectedState();
+  </script>
+</body>
+</html>

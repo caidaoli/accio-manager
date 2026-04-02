@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ page_title }}</title>
+  <style>
+    :root {
+      --bg: #eef3f8;
+      --text: #14324a;
+      --muted: #5b7287;
+      --brand: #1967d2;
+      --shadow: 0 24px 60px rgba(23, 42, 58, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(37, 111, 255, 0.18), transparent 28%),
+        linear-gradient(180deg, #f7fbff 0%, var(--bg) 100%);
+    }
+
+    .shell {
+      width: min(960px, calc(100% - 32px));
+      margin: 32px auto;
+    }
+
+    .hero, .card {
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero {
+      padding: 30px;
+      color: #fff;
+      background: linear-gradient(135deg, rgba(16, 86, 170, 0.96), rgba(20, 50, 74, 0.92));
+    }
+
+    .hero h1 {
+      margin: 0 0 10px;
+      font-size: 38px;
+    }
+
+    .hero p {
+      margin: 0;
+      color: rgba(255,255,255,0.76);
+      line-height: 1.7;
+    }
+
+    .card {
+      margin-top: 20px;
+      background: rgba(255,255,255,0.92);
+      padding: 28px;
+      border: 1px solid rgba(255,255,255,0.72);
+    }
+
+    .label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .input {
+      width: 100%;
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(20, 50, 74, 0.12);
+      font-size: 14px;
+    }
+
+    .hint {
+      margin-top: 10px;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 13px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 20px;
+    }
+
+    .button, .link-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 12px 18px;
+      text-decoration: none;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+    }
+
+    .button.primary, .link-button.primary {
+      background: var(--brand);
+      color: #fff;
+    }
+
+    .button.secondary, .link-button.secondary {
+      background: rgba(20, 50, 74, 0.08);
+      color: var(--text);
+    }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      min-width: 220px;
+      max-width: 360px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(20, 50, 74, 0.92);
+      color: #ffffff;
+      box-shadow: 0 20px 40px rgba(23, 42, 58, 0.22);
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+      transition: all 180ms ease;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <h1>Accio 多账号管理面板</h1>
+      <p>管理操作需要管理员密码。打开登录页、复制登录链接和登录成功回调仍然可以直接使用。</p>
+    </section>
+
+    <section class="card">
+      <label class="label" for="admin-password">管理员密码</label>
+      <input id="admin-password" class="input" type="password" placeholder="请输入管理员密码">
+      <div class="hint">
+        当前回调地址：{{ callback_url }}<br>
+        登录入口：{{ login_url }}
+      </div>
+
+      <div class="actions">
+        <button class="button primary" type="button" onclick="loginAdmin()">登录面板</button>
+        <a class="link-button secondary" href="/login" target="_blank" rel="noreferrer">打开登录页</a>
+        <button class="button secondary" type="button" onclick="copyLoginLink()">复制登录链接</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    async function loginAdmin() {
+      const password = document.getElementById('admin-password').value;
+      try {
+        const response = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ password })
+        });
+        const payload = await response.json();
+        showToast(payload.message || '登录完成');
+        if (payload.success) {
+          window.setTimeout(() => window.location.reload(), 300);
+        }
+      } catch (error) {
+        console.error(error);
+        showToast('登录失败，请稍后重试');
+      }
+    }
+
+    async function copyLoginLink() {
+      try {
+        const response = await fetch('/api/login-link');
+        const payload = await response.json();
+        if (!payload.success) {
+          showToast(payload.message || '获取登录链接失败');
+          return;
+        }
+        await navigator.clipboard.writeText(payload.url);
+        showToast('登录链接已复制到剪贴板');
+      } catch (error) {
+        console.error(error);
+        showToast('复制失败，请直接打开登录页');
+      }
+    }
+
+    function showToast(text) {
+      const toast = document.getElementById('toast');
+      toast.textContent = text;
+      toast.classList.add('show');
+      window.clearTimeout(window.__accioToastTimer);
+      window.__accioToastTimer = window.setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2600);
+    }
+  </script>
+</body>
+</html>

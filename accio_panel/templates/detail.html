@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ account.name }} 详情</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at top right, rgba(18, 128, 92, 0.12), transparent 30%),
+        linear-gradient(180deg, #f7fbff 0%, #eef3f8 100%);
+      color: #14324a;
+    }
+
+    .shell {
+      width: min(920px, calc(100% - 32px));
+      margin: 32px auto;
+    }
+
+    .card {
+      padding: 28px;
+      border-radius: 28px;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.72);
+      box-shadow: 0 22px 50px rgba(23, 42, 58, 0.08);
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 34px;
+    }
+
+    .subtitle {
+      color: #5b7287;
+      margin-bottom: 24px;
+      line-height: 1.7;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+
+    .item {
+      padding: 16px;
+      border-radius: 18px;
+      background: #f8fbfe;
+      border: 1px solid rgba(20, 50, 74, 0.06);
+    }
+
+    .label {
+      font-size: 12px;
+      color: #5b7287;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .value {
+      margin-top: 8px;
+      font-weight: 700;
+      word-break: break-all;
+      line-height: 1.7;
+    }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 18px;
+    }
+
+    .status-chip.enabled {
+      background: #def7ec;
+      color: #12805c;
+    }
+
+    .status-chip.manual {
+      background: rgba(20, 50, 74, 0.1);
+      color: #14324a;
+    }
+
+    .status-chip.auto {
+      background: #ffe1e1;
+      color: #c84646;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 24px;
+      flex-wrap: wrap;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 12px 18px;
+      text-decoration: none;
+      background: #1967d2;
+      color: #ffffff;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+    }
+
+    .button.secondary {
+      background: rgba(20, 50, 74, 0.08);
+      color: #14324a;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="card">
+      <h1>{{ account.name }}</h1>
+      <div class="subtitle">账号完整信息与当前额度状态。</div>
+      <div class="status-chip {{ status.level }}">{{ status.label }}</div>
+      <div class="subtitle" style="margin-top: -6px;">{{ status.hint }}</div>
+
+      <div class="grid">
+        <div class="item">
+          <div class="label">账号名</div>
+          <div class="value">{{ account.name }}</div>
+        </div>
+        <div class="item">
+          <div class="label">UTDID</div>
+          <div class="value">{{ account.utdid }}</div>
+        </div>
+        <div class="item">
+          <div class="label">Access Token</div>
+          <div class="value" id="access-token">{{ account.access_token }}</div>
+        </div>
+        <div class="item">
+          <div class="label">Refresh Token</div>
+          <div class="value" id="refresh-token">{{ account.refresh_token }}</div>
+        </div>
+        <div class="item">
+          <div class="label">Token 过期</div>
+          <div class="value">{{ expires_at_text }}</div>
+        </div>
+        <div class="item">
+          <div class="label">剩余额度</div>
+          <div class="value">{{ quota.remaining_text }} / {{ quota.reset_text }}</div>
+        </div>
+        <div class="item">
+          <div class="label">添加时间</div>
+          <div class="value">{{ account.added_at }}</div>
+        </div>
+        <div class="item">
+          <div class="label">最近更新</div>
+          <div class="value">{{ account.updated_at }}</div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="button secondary" type="button" onclick='toggleAccountEnabled({{ account.id|tojson }}, {{ (not account.manual_enabled)|tojson }})'>
+          {{ "手动启用" if not account.manual_enabled else "手动禁用" }}
+        </button>
+        <button class="button secondary" type="button" onclick='renameAccount({{ account.id|tojson }}, {{ account.name|tojson }})'>重命名账号</button>
+        <button class="button" type="button" onclick="copyToken('access-token', 'Access Token')">复制 Access Token</button>
+        <button class="button secondary" type="button" onclick="copyToken('refresh-token', 'Refresh Token')">复制 Refresh Token</button>
+        <a class="button secondary" href="/dashboard">返回面板</a>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    async function toggleAccountEnabled(accountId, nextEnabled) {
+      try {
+        const response = await fetch(`/api/accounts/${accountId}/enabled`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ enabled: nextEnabled })
+        });
+        const payload = await response.json();
+        window.alert(payload.message || '状态已更新');
+        if (payload.success) {
+          window.location.reload();
+        }
+      } catch (error) {
+        console.error(error);
+        window.alert('更新账号状态失败，请稍后重试');
+      }
+    }
+
+    async function renameAccount(accountId, currentName) {
+      const nextName = window.prompt('请输入新的账号名称', currentName || '');
+      if (nextName === null) {
+        return;
+      }
+      const trimmedName = nextName.trim();
+      if (!trimmedName) {
+        window.alert('账号名称不能为空');
+        return;
+      }
+      try {
+        const response = await fetch(`/api/accounts/${accountId}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ name: trimmedName })
+        });
+        const payload = await response.json();
+        window.alert(payload.message || '重命名完成');
+        if (payload.success) {
+          window.location.reload();
+        }
+      } catch (error) {
+        console.error(error);
+        window.alert('重命名失败，请稍后重试');
+      }
+    }
+
+    async function copyToken(elementId, label) {
+      try {
+        const value = document.getElementById(elementId).textContent;
+        await navigator.clipboard.writeText(value);
+        window.alert(`${label} 已复制`);
+      } catch (error) {
+        console.error(error);
+        window.alert(`${label} 复制失败，请手动复制`);
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ page_title }}</title>
+  <style>
+    :root {
+      --bg: #eef3f8;
+      --panel: rgba(255, 255, 255, 0.9);
+      --text: #14324a;
+      --muted: #5b7287;
+      --brand: #1967d2;
+      --shadow: 0 22px 52px rgba(23, 42, 58, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(37, 111, 255, 0.16), transparent 28%),
+        linear-gradient(180deg, #f7fbff 0%, var(--bg) 100%);
+    }
+
+    .shell {
+      width: min(900px, calc(100% - 32px));
+      margin: 32px auto;
+    }
+
+    .card {
+      padding: 28px;
+      border-radius: 28px;
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, 0.72);
+      box-shadow: var(--shadow);
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 34px;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .group {
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid rgba(20, 50, 74, 0.08);
+    }
+
+    .group:first-of-type {
+      border-top: none;
+      padding-top: 0;
+    }
+
+    .label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .input {
+      width: 100%;
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(20, 50, 74, 0.12);
+      background: #ffffff;
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .hint {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .check {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 14px 0;
+    }
+
+    .check input {
+      margin-top: 4px;
+    }
+
+    .check-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 26px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 12px 18px;
+      text-decoration: none;
+      background: var(--brand);
+      color: #ffffff;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+    }
+
+    .button.secondary {
+      background: rgba(20, 50, 74, 0.08);
+      color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="card">
+      <h1>配置中心</h1>
+      <p>在这里配置登录回调地址，以及账号额度耗尽后的自动禁用/恢复策略。</p>
+
+      <div class="group">
+        <label class="label" for="public-base-url">公开回调基础地址</label>
+        <input
+          id="public-base-url"
+          class="input"
+          type="text"
+          value="{{ panel_settings.public_base_url }}"
+          placeholder="例如 https://your-domain.com"
+        >
+        <div class="hint">
+          留空时默认使用本地地址：{{ local_base_url }}<br>
+          当前实际回调地址：<strong id="effective-callback">{{ effective_callback_url }}</strong>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="check">
+          <input id="auto-disable" type="checkbox" {% if panel_settings.auto_disable_on_empty_quota %}checked{% endif %}>
+          <div>
+            <div class="check-title">额度耗尽后自动禁用账号</div>
+            <div class="hint">当剩余额度刷新为 0% 时，将账号标记为自动禁用。</div>
+          </div>
+        </div>
+
+        <div class="check">
+          <input id="auto-enable" type="checkbox" {% if panel_settings.auto_enable_on_recovered_quota %}checked{% endif %}>
+          <div>
+            <div class="check-title">额度恢复后自动启用账号</div>
+            <div class="hint">当已自动禁用的账号额度恢复后，自动解除自动禁用状态。</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="button" type="button" onclick="saveSettings()">保存配置</button>
+        <a class="button secondary" href="/dashboard">返回面板</a>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    async function saveSettings() {
+      const publicBaseUrl = document.getElementById('public-base-url').value.trim();
+      const autoDisableOnEmptyQuota = document.getElementById('auto-disable').checked;
+      const autoEnableOnRecoveredQuota = document.getElementById('auto-enable').checked;
+
+      try {
+        const response = await fetch('/api/settings', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            publicBaseUrl,
+            autoDisableOnEmptyQuota,
+            autoEnableOnRecoveredQuota
+          })
+        });
+        const payload = await response.json();
+        window.alert(payload.message || '设置已保存');
+        if (payload.success) {
+          document.getElementById('effective-callback').textContent = payload.callbackUrl;
+          document.getElementById('public-base-url').value = payload.settings.publicBaseUrl || '';
+        }
+      } catch (error) {
+        console.error(error);
+        window.alert('保存失败，请稍后重试');
+      }
+    }
+  </script>
+</body>
+</html>
