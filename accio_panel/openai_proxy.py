@@ -466,6 +466,9 @@ def _convert_openai_user_content_v2(value: Any) -> str | list[dict[str, Any]]:
                 blocks.append({"type": "text", "text": f"[file] {filename}"})
             continue
 
+        if item:
+            blocks.append({"type": "text", "text": _json_text(item)})
+
     if not blocks:
         return ""
     if len(blocks) == 1 and blocks[0]["type"] == "text":
@@ -477,12 +480,25 @@ def _tool_call_from_content_block(block: dict[str, Any]) -> dict[str, Any] | Non
     block_type = str(block.get("type") or "").strip().lower()
     if block_type not in {"tool_use", "tool_call", "function_call"}:
         return None
-    name = str(
-        block.get("name")
-        or block.get("tool_name")
-        or block.get("function_name")
-        or ""
-    ).strip()
+    function_payload = block.get("function")
+    if isinstance(function_payload, dict):
+        name_value = (
+            function_payload.get("name")
+            or block.get("name")
+            or block.get("tool_name")
+            or block.get("function_name")
+            or ""
+        )
+        arguments = function_payload.get("arguments", function_payload.get("arguments_json"))
+    else:
+        name_value = (
+            block.get("name")
+            or block.get("tool_name")
+            or block.get("function_name")
+            or ""
+        )
+        arguments = block.get("arguments", block.get("input"))
+    name = str(name_value).strip()
     if not name:
         return None
     tool_call_id = str(
@@ -491,7 +507,6 @@ def _tool_call_from_content_block(block: dict[str, Any]) -> dict[str, Any] | Non
         or block.get("tool_call_id")
         or uuid.uuid4().hex
     )
-    arguments = block.get("arguments", block.get("input"))
     if arguments is None:
         arguments = block.get("arguments_json", block.get("argumentsJson"))
     return {
@@ -516,9 +531,19 @@ def _convert_openai_assistant_content_v2(message: dict[str, Any]) -> str | list[
                 if refusal is not None:
                     blocks.append({"type": "text", "text": str(refusal)})
                 continue
+            if block_type in {"image", "input_image", "image_url", "input_file", "file"}:
+                image_blocks = _convert_openai_user_content_v2([item])
+                if isinstance(image_blocks, str):
+                    if image_blocks:
+                        blocks.append({"type": "text", "text": image_blocks})
+                elif isinstance(image_blocks, list):
+                    blocks.extend(image_blocks)
+                continue
             tool_call = _tool_call_from_content_block(item)
             if tool_call:
                 blocks.append(tool_call)
+                continue
+            blocks.append({"type": "text", "text": _json_text(item)})
 
     tool_calls = message.get("tool_calls")
     if isinstance(tool_calls, list):

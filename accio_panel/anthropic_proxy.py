@@ -220,11 +220,45 @@ def convert_messages(messages: list[Any]) -> list[dict[str, Any]]:
                     if not isinstance(block, dict):
                         continue
                     block_type = block.get("type")
-                    if block_type == "text":
+                    if block_type in {"text", "input_text", "output_text"}:
                         parts.append(
                             {
                                 "text": str(block.get("text") or ""),
                                 "thought": False,
+                            }
+                        )
+                    elif (
+                        block_type == "image"
+                        and isinstance(block.get("source"), dict)
+                        and block["source"].get("type") == "base64"
+                    ):
+                        parts.append(
+                            {
+                                "thought": False,
+                                "inline_data": {
+                                    "mime_type": str(block["source"].get("media_type") or ""),
+                                    "data": str(block["source"].get("data") or ""),
+                                },
+                            }
+                        )
+                    elif (
+                        block_type == "image"
+                        and isinstance(block.get("source"), dict)
+                        and block["source"].get("type") == "url"
+                        and block["source"].get("url")
+                    ):
+                        parts.append(
+                            {
+                                "thought": False,
+                                "file_data": {
+                                    "file_uri": str(block["source"].get("url") or ""),
+                                    "mime_type": str(
+                                        block["source"].get("media_type")
+                                        or _guess_image_mime_type(
+                                            str(block["source"].get("url") or "")
+                                        )
+                                    ),
+                                },
                             }
                         )
                     elif block_type == "thinking":
@@ -237,14 +271,36 @@ def convert_messages(messages: list[Any]) -> list[dict[str, Any]]:
                             part["thoughtSignature"] = str(signature)
                             thought_signature = str(signature)
                         parts.append(part)
-                    elif block_type == "tool_use":
+                    elif block_type in {"tool_use", "tool_call", "function_call"}:
+                        function_payload = block.get("function")
+                        input_value = block.get("input")
+                        tool_name = str(block.get("name") or "")
+                        if isinstance(function_payload, dict):
+                            if not tool_name:
+                                tool_name = str(function_payload.get("name") or "")
+                            if input_value is None:
+                                input_value = function_payload.get(
+                                    "arguments",
+                                    function_payload.get("arguments_json"),
+                                )
+                        if input_value is None:
+                            input_value = block.get("arguments", block.get("arguments_json"))
                         parts.append(
                             {
                                 "thought": False,
                                 "functionCall": {
-                                    "id": sanitize_tool_call_id(block.get("id")),
-                                    "name": str(block.get("name") or ""),
-                                    "argsJson": json.dumps(block.get("input") or {}),
+                                    "id": sanitize_tool_call_id(
+                                        block.get("id")
+                                        or block.get("call_id")
+                                        or block.get("tool_call_id")
+                                        or uuid.uuid4().hex
+                                    ),
+                                    "name": tool_name,
+                                    "argsJson": (
+                                        input_value
+                                        if isinstance(input_value, str)
+                                        else json.dumps(input_value or {})
+                                    ),
                                 },
                             }
                         )
@@ -320,7 +376,12 @@ def convert_messages(messages: list[Any]) -> list[dict[str, Any]]:
                 elif block_type == "tool_result":
                     tool_info = find_tool_info(block.get("tool_use_id"), messages)
                     function_response: dict[str, Any] = {
-                        "id": sanitize_tool_call_id(block.get("tool_use_id")),
+                        "id": sanitize_tool_call_id(
+                            block.get("tool_use_id")
+                            or block.get("tool_call_id")
+                            or block.get("id")
+                            or uuid.uuid4().hex
+                        ),
                         "name": (
                             str(tool_info.get("name"))
                             if tool_info and tool_info.get("name")
