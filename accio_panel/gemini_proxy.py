@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import uuid
 from typing import Any
+from typing import Callable
+from typing import Iterator
 
 import requests
 
@@ -67,21 +69,41 @@ def gemini_error_payload(
     }
 
 
+def normalize_gemini_model_name(model_name: Any) -> str:
+    normalized = str(model_name or "").strip()
+    if normalized.lower().startswith("models/"):
+        return normalized[7:].strip()
+    return normalized
+
+
+def _supported_generation_methods() -> list[str]:
+    return ["generateContent", "streamGenerateContent"]
+
+
+def build_gemini_model_payload(model_name: str) -> dict[str, Any] | None:
+    normalized_name = normalize_gemini_model_name(model_name)
+    if not normalized_name:
+        return None
+    metadata = GEMINI_MODEL_METADATA.get(normalized_name, {})
+    if not metadata and normalized_name not in SUPPORTED_GEMINI_MODELS_SET:
+        return None
+    return {
+        "name": f"models/{normalized_name}",
+        "baseModelId": normalized_name,
+        "displayName": metadata.get("display_name", normalized_name),
+        "description": "Accio Gemini 兼容代理模型",
+        "inputTokenLimit": metadata.get("input_limit", 1_000_000),
+        "outputTokenLimit": metadata.get("output_limit", 16_384),
+        "supportedGenerationMethods": _supported_generation_methods(),
+    }
+
+
 def build_gemini_models_payload() -> dict[str, Any]:
     models: list[dict[str, Any]] = []
     for model_name in SUPPORTED_GEMINI_MODELS:
-        metadata = GEMINI_MODEL_METADATA.get(model_name, {})
-        models.append(
-            {
-                "name": f"models/{model_name}",
-                "baseModelId": model_name,
-                "displayName": metadata.get("display_name", model_name),
-                "description": "Accio Gemini 兼容代理模型",
-                "inputTokenLimit": metadata.get("input_limit", 1_000_000),
-                "outputTokenLimit": metadata.get("output_limit", 16_384),
-                "supportedGenerationMethods": ["generateContent"],
-            }
-        )
+        model_payload = build_gemini_model_payload(model_name)
+        if model_payload:
+            models.append(model_payload)
     return {"models": models}
 
 
@@ -661,6 +683,22 @@ def build_gemini_generate_content_response(
     model: str,
 ) -> dict[str, Any]:
     return normalize_gemini_response_payload(payload, model=model)
+
+
+def iter_gemini_generate_content_sse_bytes(
+    response: requests.Response,
+    model: str,
+    on_complete: Callable[[dict[str, Any]], None] | None = None,
+) -> Iterator[bytes]:
+    payload = decode_gemini_generate_content_response(response, model)
+    summary = summarize_gemini_response(payload)
+    summary["usage"] = extract_gemini_usage(payload)
+    summary["stop_reason"] = extract_gemini_finish_reason(payload)
+    try:
+        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+    finally:
+        if on_complete is not None:
+            on_complete(summary)
 
 
 def extract_gemini_usage(payload: dict[str, Any]) -> dict[str, int]:

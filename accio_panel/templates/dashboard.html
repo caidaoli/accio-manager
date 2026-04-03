@@ -839,7 +839,7 @@
           OAuth 登录页：<strong>{{ oauth_url }}</strong><br>
           Anthropic 兼容 API：<strong>{{ api_base_url }}/v1/models</strong> / <strong>{{ api_base_url }}/v1/messages</strong><br>
           OpenAI 兼容 API：<strong>{{ api_base_url }}/v1/models</strong> / <strong>{{ api_base_url }}/v1/chat/completions</strong> / <strong>{{ api_base_url }}/v1/responses</strong><br>
-          Gemini 兼容 API：<strong>{{ api_base_url }}/v1beta/models</strong> / <strong>{{ api_base_url }}/v1beta/models/{model}:generateContent</strong><br>
+          Gemini 兼容 API：<strong>{{ api_base_url }}/v1beta/models</strong> / <strong>{{ api_base_url }}/v1beta/models/{model}</strong> / <strong>{{ api_base_url }}/v1beta/models/{model}:generateContent</strong> / <strong>{{ api_base_url }}/v1beta/models/{model}:streamGenerateContent</strong><br>
           调用鉴权使用 <code>x-api-key</code> 或 <code>Authorization: Bearer</code>，值为当前管理员密码。<br>
           上游代理支持 <code>http://</code>、<code>https://</code>、<code>socks5://</code>、<code>socks5h://</code>、<code>socks4://</code>、<code>socks4a://</code>。
         </div>

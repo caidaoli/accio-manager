@@ -43,18 +43,24 @@ from .client import AccioClient
 from .config import Settings
 from .gemini_proxy import (
     build_accio_request_from_gemini,
+    build_gemini_model_payload,
     build_gemini_models_payload,
     decode_gemini_generate_content_response,
     extract_gemini_finish_reason,
     extract_gemini_usage,
     gemini_error_payload,
+    iter_gemini_generate_content_sse_bytes,
+    normalize_gemini_model_name,
     summarize_gemini_response,
 )
 from .model_catalog import (
+    build_gemini_model_payload_from_catalog,
     build_gemini_models_payload_from_catalog,
     build_openai_models_payload_from_catalog,
     extract_model_catalog,
+    is_image_generation_model,
     list_model_names,
+    list_proxy_model_names,
 )
 from .models import Account
 from .openai_proxy import (
@@ -301,7 +307,7 @@ def _dynamic_proxy_model_names(
     panel_settings: PanelSettings,
 ) -> set[str]:
     entries, _ = _load_dynamic_model_catalog(application, panel_settings)
-    return list_model_names(entries)
+    return list_proxy_model_names(entries)
 
 
 def _dynamic_gemini_model_names(
@@ -310,6 +316,20 @@ def _dynamic_gemini_model_names(
 ) -> set[str]:
     entries, _ = _load_dynamic_model_catalog(application, panel_settings)
     return list_model_names(entries, provider="gemini")
+
+
+def _resolve_gemini_model_payload(
+    application: FastAPI,
+    panel_settings: PanelSettings,
+    model_name: str,
+) -> tuple[dict[str, Any] | None, str]:
+    normalized_name = normalize_gemini_model_name(model_name)
+    catalog, source = _load_dynamic_model_catalog(application, panel_settings)
+    if catalog:
+        payload = build_gemini_model_payload_from_catalog(catalog, normalized_name)
+        if payload:
+            return payload, source
+    return build_gemini_model_payload(normalized_name), "static-fallback"
 
 
 def _model_catalog_dashboard_text(
@@ -341,7 +361,11 @@ def _is_allowed_dynamic_model(
     *,
     provider: str | None = None,
 ) -> tuple[bool, list[str]]:
-    normalized = str(model_name or "").strip()
+    normalized = (
+        normalize_gemini_model_name(model_name)
+        if provider == "gemini"
+        else str(model_name or "").strip()
+    )
     if not normalized:
         return False, []
     available = (
@@ -349,6 +373,8 @@ def _is_allowed_dynamic_model(
         if provider == "gemini"
         else sorted(_dynamic_proxy_model_names(application, panel_settings))
     )
+    if provider != "gemini" and is_image_generation_model(normalized):
+        return False, available
     if available:
         return normalized in set(available), available
     return True, []
@@ -1133,6 +1159,321 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def settings_page() -> RedirectResponse:
         return RedirectResponse(url="/dashboard", status_code=307)
 
+    async def _handle_gemini_generate_content(
+        request: Request,
+        model_name: str,
+        *,
+        force_stream: bool = False,
+    ) -> Response:
+        panel_settings = panel_settings_store.load()
+        usage_stats_store: UsageStatsStore = application.state.usage_stats_store
+        api_log_store: ApiLogStore = application.state.api_log_store
+        unauthorized = _authorize_proxy_request(request, panel_settings)
+        if unauthorized:
+            return JSONResponse(
+                gemini_error_payload(401, "无效的 API Key", error_status="UNAUTHENTICATED"),
+                status_code=401,
+            )
+
+        normalized_model_name = normalize_gemini_model_name(model_name)
+        allowed, available = _is_allowed_dynamic_model(
+            application,
+            panel_settings,
+            normalized_model_name,
+            provider="gemini",
+        )
+        if not allowed:
+            return _gemini_error_response(
+                400,
+                f"不支持模型 {normalized_model_name}。当前可用 Gemini 模型: {', '.join(available)}",
+            )
+
+        started_at = time.perf_counter()
+        requested_stream = force_stream or str(request.query_params.get("alt") or "").strip().lower() == "sse"
+        raw_body = await request.body()
+        if not raw_body.strip():
+            return _gemini_error_response(400, "请求体不能为空。")
+
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return _gemini_error_response(400, "请求体必须是合法的 JSON。")
+        if not isinstance(payload, dict):
+            return _gemini_error_response(400, "请求体必须是 JSON 对象。")
+
+        contents_value = payload.get("contents")
+        messages_count = len(contents_value) if isinstance(contents_value, list) else 0
+
+        try:
+            account, quota = await asyncio.to_thread(
+                _select_proxy_account,
+                application,
+                panel_settings,
+            )
+        except ProxySelectionError as exc:
+            api_log_store.record(
+                {
+                    "level": "error",
+                    "event": "gemini_generate_content",
+                    "success": False,
+                    "emptyResponse": False,
+                    "accountId": "",
+                    "accountName": "-",
+                    "fillPriority": None,
+                    "model": normalized_model_name,
+                    "stream": requested_stream,
+                    "strategy": panel_settings.api_account_strategy,
+                    "requestId": "",
+                    "message": exc.message,
+                    "statusCode": exc.status_code,
+                    "stopReason": "proxy_selection_failed",
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "remainingQuota": None,
+                    "usedQuota": None,
+                    "messagesCount": messages_count,
+                    "durationMs": int((time.perf_counter() - started_at) * 1000),
+                }
+            )
+            return _gemini_error_response(
+                exc.status_code,
+                exc.message,
+                error_status="UNAVAILABLE",
+            )
+
+        accio_body = build_accio_request_from_gemini(
+            payload,
+            model=normalized_model_name,
+            token=account.access_token,
+            utdid=account.utdid,
+            version=settings.version,
+        )
+        request_id = str(accio_body.get("request_id") or "")
+
+        try:
+            upstream_response = await asyncio.to_thread(
+                client.generate_content,
+                account,
+                accio_body,
+                proxy_url=panel_settings.upstream_proxy_url,
+            )
+        except requests.RequestException as exc:
+            usage_stats_store.record_message(
+                account_id=account.id,
+                model=normalized_model_name,
+                input_tokens=0,
+                output_tokens=0,
+                success=False,
+                stop_reason="request_exception",
+            )
+            api_log_store.record(
+                {
+                    "level": "error",
+                    "event": "gemini_generate_content",
+                    "success": False,
+                    "emptyResponse": False,
+                    "accountId": account.id,
+                    "accountName": account.name,
+                    "fillPriority": account.fill_priority,
+                    "model": normalized_model_name,
+                    "stream": requested_stream,
+                    "strategy": panel_settings.api_account_strategy,
+                    "requestId": request_id,
+                    "message": f"上游请求失败: {exc}",
+                    "statusCode": 502,
+                    "stopReason": "request_exception",
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "remainingQuota": quota.get("remaining_value"),
+                    "usedQuota": quota.get("used_value"),
+                    "messagesCount": messages_count,
+                    "durationMs": int((time.perf_counter() - started_at) * 1000),
+                }
+            )
+            return _gemini_error_response(
+                502,
+                f"上游请求失败: {exc}",
+                error_status="UNAVAILABLE",
+            )
+
+        response_headers = {
+            "x-accio-account-id": account.id,
+            "x-accio-account-strategy": panel_settings.api_account_strategy,
+        }
+
+        if not upstream_response.ok:
+            upstream_text = ""
+            with contextlib.suppress(Exception):
+                upstream_text = upstream_response.text[:500]
+            usage_stats_store.record_message(
+                account_id=account.id,
+                model=normalized_model_name,
+                input_tokens=0,
+                output_tokens=0,
+                success=False,
+                stop_reason="upstream_error",
+            )
+            api_log_store.record(
+                {
+                    "level": "error",
+                    "event": "gemini_generate_content",
+                    "success": False,
+                    "emptyResponse": False,
+                    "accountId": account.id,
+                    "accountName": account.name,
+                    "fillPriority": account.fill_priority,
+                    "model": normalized_model_name,
+                    "stream": requested_stream,
+                    "strategy": panel_settings.api_account_strategy,
+                    "requestId": request_id,
+                    "message": upstream_text or "上游返回错误。",
+                    "statusCode": upstream_response.status_code,
+                    "stopReason": "upstream_error",
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "remainingQuota": quota.get("remaining_value"),
+                    "usedQuota": quota.get("used_value"),
+                    "messagesCount": messages_count,
+                    "durationMs": int((time.perf_counter() - started_at) * 1000),
+                }
+            )
+            return _gemini_error_response(
+                upstream_response.status_code,
+                upstream_text or "上游返回错误。",
+                error_status="UNAVAILABLE",
+            )
+
+        if requested_stream:
+            def on_gemini_stream_complete(summary: dict[str, Any]) -> None:
+                usage = summary.get("usage") if isinstance(summary.get("usage"), dict) else {}
+                usage_stats_store.record_message(
+                    account_id=account.id,
+                    model=normalized_model_name,
+                    input_tokens=int(usage.get("input_tokens") or 0),
+                    output_tokens=int(usage.get("output_tokens") or 0),
+                    success=True,
+                    stop_reason=str(summary.get("stop_reason") or "STOP"),
+                )
+                api_log_store.record(
+                    {
+                        "level": "warn" if bool(summary.get("empty_response")) else "info",
+                        "event": "gemini_generate_content",
+                        "success": True,
+                        "emptyResponse": bool(summary.get("empty_response")),
+                        "accountId": account.id,
+                        "accountName": account.name,
+                        "fillPriority": account.fill_priority,
+                        "model": normalized_model_name,
+                        "stream": True,
+                        "strategy": panel_settings.api_account_strategy,
+                        "requestId": request_id,
+                        "message": "空回复" if bool(summary.get("empty_response")) else "Gemini 流式兼容调用完成",
+                        "statusCode": 200,
+                        "stopReason": str(summary.get("stop_reason") or "STOP"),
+                        "inputTokens": int(usage.get("input_tokens") or 0),
+                        "outputTokens": int(usage.get("output_tokens") or 0),
+                        "remainingQuota": quota.get("remaining_value"),
+                        "usedQuota": quota.get("used_value"),
+                        "messagesCount": messages_count,
+                        "imageBlocks": int(summary.get("image_blocks") or 0),
+                        "textChars": int(summary.get("text_chars") or 0),
+                        "toolUseBlocks": int(summary.get("tool_use_blocks") or 0),
+                        "durationMs": int((time.perf_counter() - started_at) * 1000),
+                    }
+                )
+
+            stream_bytes = iter_gemini_generate_content_sse_bytes(
+                upstream_response,
+                normalized_model_name,
+                on_complete=on_gemini_stream_complete,
+            )
+            return StreamingResponse(
+                stream_bytes,
+                media_type="text/event-stream",
+                headers=response_headers,
+            )
+
+        try:
+            response_payload = await asyncio.to_thread(
+                decode_gemini_generate_content_response,
+                upstream_response,
+                normalized_model_name,
+            )
+        except ValueError as exc:
+            usage_stats_store.record_message(
+                account_id=account.id,
+                model=normalized_model_name,
+                input_tokens=0,
+                output_tokens=0,
+                success=False,
+                stop_reason="decode_error",
+            )
+            api_log_store.record(
+                {
+                    "level": "error",
+                    "event": "gemini_generate_content",
+                    "success": False,
+                    "emptyResponse": False,
+                    "accountId": account.id,
+                    "accountName": account.name,
+                    "fillPriority": account.fill_priority,
+                    "model": normalized_model_name,
+                    "stream": False,
+                    "strategy": panel_settings.api_account_strategy,
+                    "requestId": request_id,
+                    "message": str(exc),
+                    "statusCode": 502,
+                    "stopReason": "decode_error",
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "remainingQuota": quota.get("remaining_value"),
+                    "usedQuota": quota.get("used_value"),
+                    "messagesCount": messages_count,
+                    "durationMs": int((time.perf_counter() - started_at) * 1000),
+                }
+            )
+            return _gemini_error_response(502, str(exc), error_status="UNAVAILABLE")
+
+        usage = extract_gemini_usage(response_payload)
+        output_summary = summarize_gemini_response(response_payload)
+        finish_reason = extract_gemini_finish_reason(response_payload)
+        usage_stats_store.record_message(
+            account_id=account.id,
+            model=normalized_model_name,
+            input_tokens=int(usage["input_tokens"]),
+            output_tokens=int(usage["output_tokens"]),
+            success=True,
+            stop_reason=finish_reason,
+        )
+        api_log_store.record(
+            {
+                "level": "warn" if output_summary["empty_response"] else "info",
+                "event": "gemini_generate_content",
+                "success": True,
+                "emptyResponse": bool(output_summary["empty_response"]),
+                "accountId": account.id,
+                "accountName": account.name,
+                "fillPriority": account.fill_priority,
+                "model": normalized_model_name,
+                "stream": False,
+                "strategy": panel_settings.api_account_strategy,
+                "requestId": request_id,
+                "message": "空回复" if output_summary["empty_response"] else "Gemini 兼容调用完成",
+                "statusCode": 200,
+                "stopReason": finish_reason,
+                "inputTokens": int(usage["input_tokens"]),
+                "outputTokens": int(usage["output_tokens"]),
+                "remainingQuota": quota.get("remaining_value"),
+                "usedQuota": quota.get("used_value"),
+                "messagesCount": messages_count,
+                "textChars": int(output_summary["text_chars"]),
+                "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                "imageBlocks": int(output_summary["image_blocks"]),
+                "durationMs": int((time.perf_counter() - started_at) * 1000),
+            }
+        )
+        return JSONResponse(response_payload, headers=response_headers)
+
     @application.post("/api/auth/login")
     def admin_login(request: Request, payload: dict[str, Any] = Body(...)) -> JSONResponse:
         panel_settings = panel_settings_store.load()
@@ -1285,8 +1626,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return response
 
+    @application.get("/v1beta/models/{model_name}")
+    def gemini_model_detail(request: Request, model_name: str) -> JSONResponse:
+        panel_settings = panel_settings_store.load()
+        unauthorized = _authorize_proxy_request(request, panel_settings)
+        if unauthorized:
+            return JSONResponse(
+                gemini_error_payload(401, "无效的 API Key", error_status="UNAUTHENTICATED"),
+                status_code=401,
+            )
+        model_payload, source = _resolve_gemini_model_payload(
+            application,
+            panel_settings,
+            model_name,
+        )
+        if model_payload is None:
+            available = sorted(_dynamic_gemini_model_names(application, panel_settings))
+            return _gemini_error_response(
+                404,
+                f"未找到模型 {normalize_gemini_model_name(model_name)}。当前可用 Gemini 模型: {', '.join(available)}",
+                error_status="NOT_FOUND",
+            )
+        response = JSONResponse(model_payload)
+        response.headers["x-accio-model-source"] = source
+        return response
+
+    @application.post("/v1beta/models/{model_name}:streamGenerateContent")
+    async def gemini_stream_generate_content(
+        request: Request,
+        model_name: str,
+    ) -> Response:
+        return await _handle_gemini_generate_content(
+            request,
+            model_name,
+            force_stream=True,
+        )
+
     @application.post("/v1beta/models/{model_name}:generateContent")
-    async def gemini_generate_content(request: Request, model_name: str) -> JSONResponse:
+    async def gemini_generate_content(request: Request, model_name: str) -> Response:
+        return await _handle_gemini_generate_content(request, model_name)
         panel_settings = panel_settings_store.load()
         usage_stats_store: UsageStatsStore = application.state.usage_stats_store
         api_log_store: ApiLogStore = application.state.api_log_store
