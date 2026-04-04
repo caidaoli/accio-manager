@@ -438,6 +438,32 @@
       background: linear-gradient(135deg, #0f6adf, #13a0f5);
     }
 
+    .page-jump {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 4px;
+    }
+
+    .page-jump-input {
+      width: 60px;
+      height: 38px;
+      border-radius: 12px;
+      border: 1px solid rgba(20, 50, 74, 0.12);
+      background: rgba(255, 255, 255, 0.9);
+      text-align: center;
+      font-size: 14px;
+      font-weight: 700;
+      color: #14324a;
+      -moz-appearance: textfield;
+    }
+
+    .page-jump-input::-webkit-outer-spin-button,
+    .page-jump-input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
     .settings-panel {
       display: grid;
       gap: 18px;
@@ -1000,11 +1026,18 @@
       <div class="pager">
         <div class="meta">共 {{ total_pages }} 页</div>
         <div class="pager-links">
+          <a class="page-link" href="/dashboard?view=accounts&page=1&pageSize={{ page_size }}">首页</a>
           <a class="page-link" href="/dashboard?view=accounts&page={{ 1 if current_page <= 1 else current_page - 1 }}&pageSize={{ page_size }}">上一页</a>
           {% for number in page_numbers %}
           <a class="page-link {% if number == current_page %}active{% endif %}" href="/dashboard?view=accounts&page={{ number }}&pageSize={{ page_size }}">{{ number }}</a>
           {% endfor %}
           <a class="page-link" href="/dashboard?view=accounts&page={{ total_pages if current_page >= total_pages else current_page + 1 }}&pageSize={{ page_size }}">下一页</a>
+          <a class="page-link" href="/dashboard?view=accounts&page={{ total_pages }}&pageSize={{ page_size }}">末页</a>
+          <span class="page-jump">
+            <input id="page-jump-input" class="page-jump-input" type="number" min="1" max="{{ total_pages }}" placeholder="{{ current_page }}"
+              onkeydown="if(event.key==='Enter')jumpToPage()">
+            <button class="page-link" type="button" onclick="jumpToPage()">跳转</button>
+          </span>
         </div>
       </div>
       {% else %}
@@ -1085,6 +1118,21 @@
       url.searchParams.set('view', 'accounts');
       url.searchParams.set('page', '1');
       url.searchParams.set('pageSize', select.value);
+      window.location.href = url.toString();
+    }
+
+    function jumpToPage() {
+      const input = document.getElementById('page-jump-input');
+      if (!input) return;
+      const page = parseInt(input.value, 10);
+      const totalPages = {{ total_pages }};
+      if (isNaN(page) || page < 1 || page > totalPages) {
+        showToast(`请输入 1 到 ${totalPages} 之间的页码`);
+        return;
+      }
+      const url = new URL(window.location.href);
+      url.searchParams.set('view', 'accounts');
+      url.searchParams.set('page', String(page));
       window.location.href = url.toString();
     }
 
