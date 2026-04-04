@@ -60,7 +60,7 @@ uv run python main.py
 - 仅在推送 `vX.Y.Z` tag 时触发，例如 `v0.1.0`
 - 使用 `Nuitka/Nuitka-Action` 在 GitHub Linux runner 上构建 `linux amd64` 单文件
 - 构建前会校验 tag 与 `pyproject.toml` 中的 `project.version` 完全一致
-- 产物会以 Actions artifact 形式上传，名称为 `accio-panel-linux-amd64-<tag>`
+- 构建完成后自动创建 GitHub Release 并上传二进制文件
 
 发布示例：
 
@@ -74,58 +74,6 @@ git push origin v0.1.0
 - `accio_panel/templates` 会作为包数据打进 onefile，页面模板可直接使用
 - 未设置 `ACCIO_DATA_DIR` 时，默认数据目录会落在可执行文件同级的 `data/`
 - 设置了 `ACCIO_DATA_DIR` 时，仍然以该环境变量为准
-
-## Docker
-
-直接拉取镜像（推荐）：
-
-```bash
-docker pull ghcr.io/guji08233/accio-manager:latest
-```
-
-运行：
-
-```bash
-docker run -d \
-  --name accio-panel \
-  -p 4097:4097 \
-  -v accio-panel-data:/app/data \
-  -e ACCIO_CALLBACK_HOST=127.0.0.1 \
-  ghcr.io/guji08233/accio-manager:latest
-```
-
-镜像由 GitHub Actions 自动构建，推送到 `main` 分支后会自动更新。
-
-如需本地构建：
-
-```bash
-docker build -t accio-panel:latest .
-docker run -d \
-  --name accio-panel \
-  -p 4097:4097 \
-  -v accio-panel-data:/app/data \
-  -e ACCIO_CALLBACK_HOST=127.0.0.1 \
-  accio-panel:latest
-```
-
-说明：
-
-- 容器内服务监听 `0.0.0.0:4097`
-- 默认数据目录是 `/app/data`
-- 未配置数据库连接信息时，配置和账号继续使用本地文件
-- 配置了 `ACCIO_MYSQL` 后，面板配置和账号会持久化到 MySQL；数据库空表时会在首次启动时从本地文件补种一次
-- 服务器部署时，建议使用 `/oauth` 页面处理登录，并在需要时手动粘贴完整回调 URL 导入账号
-- 新账号在回调导入后，会自动依次触发 `userinfo`、`invitation/query` 和 `channel/query` 完成激活
-
-## GitHub Packages
-
-仓库已添加 GitHub Actions 工作流：
-
-- 文件：`.github/workflows/docker-publish.yml`
-- 触发方式：`push` 到 `main`、`workflow_dispatch` 手动触发
-- 推送目标：`ghcr.io/<owner>/<repo>`
-
-首次推送成功后，可以在仓库的 `Packages` 页面看到镜像。
 
 首次管理员密码默认值为：
 

@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-linux-amd64:
@@ -46,9 +46,8 @@ jobs:
           include-package-data: accio_panel
           assume-yes-for-downloads: true
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: accio-panel-linux-amd64-${{ github.ref_name }}
-          path: build/accio-panel-linux-amd64-${{ github.ref_name }}
-          if-no-files-found: error
+          files: build/accio-panel-linux-amd64-${{ github.ref_name }}
+          generate_release_notes: true
