@@ -12,6 +12,7 @@ dependencies = [
     "PySocks>=1.7.1",
     "requests>=2.32.3",
     "uvicorn>=0.30.6",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.scripts]

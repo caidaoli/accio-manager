@@ -113,7 +113,7 @@ docker run -d \
 - 容器内服务监听 `0.0.0.0:4097`
 - 默认数据目录是 `/app/data`
 - 未配置数据库连接信息时，配置和账号继续使用本地文件
-- 配置了 `ACCIO_MYSQL` 或完整的 `ACCIO_MYSQL_*` 连接信息后，面板配置和账号会持久化到 MySQL；数据库空表时会在首次启动时从本地文件补种一次
+- 配置了 `ACCIO_MYSQL` 后，面板配置和账号会持久化到 MySQL；数据库空表时会在首次启动时从本地文件补种一次
 - 服务器部署时，建议使用 `/oauth` 页面处理登录，并在需要时手动粘贴完整回调 URL 导入账号
 - 新账号在回调导入后，会自动依次触发 `userinfo`、`invitation/query` 和 `channel/query` 完成激活
 
@@ -150,18 +150,7 @@ admin
 MySQL 环境变量示例：
 
 ```text
-ACCIO_MYSQL=mysql://accio:secret@127.0.0.1:3306/accio_manager
-```
-
-或者拆开写：
-
-```text
-ACCIO_MYSQL_HOST=127.0.0.1
-ACCIO_MYSQL_PORT=3306
-ACCIO_MYSQL_DATABASE=accio_manager
-ACCIO_MYSQL_USER=accio
-ACCIO_MYSQL_PASSWORD=secret
-ACCIO_MYSQL_CHARSET=utf8mb4
+ACCIO_MYSQL=mysql://accio:secret@127.0.0.1:3306/accio_manager?charset=utf8mb4
 ```
 
 兼容 API 调用时：

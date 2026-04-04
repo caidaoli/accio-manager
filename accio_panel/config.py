@@ -4,8 +4,10 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
+from dotenv import load_dotenv
+
+load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -54,14 +56,6 @@ class Settings:
     auto_open_browser: bool = _env_flag("ACCIO_AUTO_OPEN_BROWSER", True)
     data_dir: Path = field(default_factory=_default_data_dir)
     database_url: str = os.getenv("ACCIO_MYSQL", "").strip()
-    mysql_host: str = os.getenv("ACCIO_MYSQL_HOST", "").strip()
-    mysql_port: int = int(os.getenv("ACCIO_MYSQL_PORT", "3306"))
-    mysql_database: str = os.getenv("ACCIO_MYSQL_DATABASE", "").strip()
-    mysql_user: str = os.getenv("ACCIO_MYSQL_USER", "").strip()
-    mysql_password: str = os.getenv("ACCIO_MYSQL_PASSWORD", "")
-    mysql_charset: str = (
-        os.getenv("ACCIO_MYSQL_CHARSET", "utf8mb4").strip() or "utf8mb4"
-    )
 
     @property
     def accounts_file(self) -> Path:
@@ -93,9 +87,7 @@ class Settings:
 
     @property
     def database_enabled(self) -> bool:
-        if self.database_url:
-            return True
-        return bool(self.mysql_host and self.mysql_database and self.mysql_user)
+        return bool(self.database_url)
 
     @property
     def storage_backend(self) -> str:
@@ -103,19 +95,6 @@ class Settings:
 
     @property
     def database_summary(self) -> str:
-        if not self.database_enabled:
+        if not self.database_url:
             return ""
-
-        if self.database_url:
-            parsed = urlparse(self.database_url)
-            host = parsed.hostname or ""
-            port = parsed.port or 3306
-            database = parsed.path.lstrip("/")
-            user = unquote(parsed.username or "")
-            if host and database:
-                account = f"{user}@" if user else ""
-                return f"{account}{host}:{port}/{database}"
-            return self.database_url
-
-        account = f"{self.mysql_user}@" if self.mysql_user else ""
-        return f"{account}{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
+        return self.database_url

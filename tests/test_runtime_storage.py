@@ -102,9 +102,6 @@ class RuntimeStorageTests(unittest.TestCase):
             settings = Settings(
                 data_dir=Path(temp_dir),
                 database_url="",
-                mysql_host="",
-                mysql_database="",
-                mysql_user="",
             )
 
             account_store, panel_settings_store = create_runtime_stores(settings)

@@ -37,22 +37,9 @@ class MySQLGateway:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "MySQLGateway":
-        if settings.database_url:
-            return cls(
-                **_parse_database_url(settings.database_url, settings.mysql_charset)
-            )
-
-        if not settings.database_enabled:
-            raise ValueError("未配置 MySQL 连接信息")
-
-        return cls(
-            host=settings.mysql_host,
-            port=settings.mysql_port,
-            user=settings.mysql_user,
-            password=settings.mysql_password,
-            database=settings.mysql_database,
-            charset=settings.mysql_charset,
-        )
+        if not settings.database_url:
+            raise ValueError("未配置 ACCIO_MYSQL")
+        return cls(**_parse_database_url(settings.database_url))
 
     def _connect(self):
         try:
@@ -89,7 +76,7 @@ class MySQLGateway:
                         session_secret VARCHAR(255) NOT NULL,
                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                             ON UPDATE CURRENT_TIMESTAMP
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    ) DEFAULT CHARSET=utf8mb4
                     """
                 )
                 cursor.execute(
@@ -111,7 +98,7 @@ class MySQLGateway:
                         next_quota_check_reason TEXT NULL,
                         added_at VARCHAR(19) NOT NULL,
                         updated_at VARCHAR(19) NOT NULL
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    ) DEFAULT CHARSET=utf8mb4
                     """
                 )
         finally:
@@ -361,7 +348,7 @@ class MySQLAccountStore(BaseAccountStore):
                 self._write_account_unlocked(account)
 
 
-def _parse_database_url(url: str, default_charset: str) -> dict[str, object]:
+def _parse_database_url(url: str) -> dict[str, Any]:
     parsed = urlparse(url)
     if parsed.scheme not in _MYSQL_SCHEMES:
         raise ValueError("ACCIO_MYSQL 仅支持 mysql:// 或 mysql+pymysql://")
@@ -371,9 +358,7 @@ def _parse_database_url(url: str, default_charset: str) -> dict[str, object]:
     user = unquote(parsed.username or "")
     password = unquote(parsed.password or "")
     port = parsed.port or 3306
-    charset = (
-        parse_qs(parsed.query).get("charset", [default_charset])[0] or default_charset
-    )
+    charset = parse_qs(parsed.query).get("charset", ["utf8mb4"])[0] or "utf8mb4"
 
     if not host or not database or not user:
         raise ValueError("ACCIO_MYSQL 缺少 host、database 或 user")
