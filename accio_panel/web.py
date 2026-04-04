@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 import requests
 import uvicorn
@@ -3294,8 +3294,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
         )
 
-    @application.post("/api/accounts/{account_id}/reactivate")
-    def reactivate_account(request: Request, account_id: str) -> JSONResponse:
+    @application.get("/api/accounts/{account_id}/switch")
+    def account_switch(request: Request, account_id: str) -> RedirectResponse | JSONResponse:
         if not _is_admin_authenticated(request):
             return _unauthorized_json()
 
@@ -3306,43 +3306,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=404,
             )
 
-        if not account.access_token or not account.refresh_token:
+        if not account.access_token:
             return JSONResponse(
-                {"success": False, "message": "账号缺少 Token 信息，无法重新激活"},
+                {"success": False, "message": "账号缺少 accessToken"},
                 status_code=400,
             )
 
-        try:
-            panel_settings = panel_settings_store.load()
-            updated, quota, _created, activation = _import_callback_account(
-                store,
-                client,
-                panel_settings,
-                access_token=account.access_token,
-                refresh_token=account.refresh_token,
-                expires_at=account.expires_at,
-                cookie=account.cookie,
-            )
-            had_disabled_models = bool(updated.disabled_models)
-            if had_disabled_models:
-                cleared = store.clear_disabled_models(updated.id)
-                if cleared is not None:
-                    updated = cleared
-            activation_text = _activation_summary_text(activation)
-            return JSONResponse(
-                {
-                    "success": True,
-                    "message": (
-                        f"{updated.name} 重新激活完成，{activation_text}"
-                        + ("，已清空模型禁用记录" if had_disabled_models else "")
-                    ),
-                }
-            )
-        except Exception as exc:
-            return JSONResponse(
-                {"success": False, "message": f"重新激活失败：{exc}"},
-                status_code=502,
-            )
+        panel_settings = panel_settings_store.load()
+        callback_url = _effective_callback_url(settings, panel_settings)
+        params: dict[str, str] = {
+            "accessToken": account.access_token,
+        }
+        if account.refresh_token:
+            params["refreshToken"] = account.refresh_token
+        if account.expires_at is not None:
+            params["expiresAt"] = str(account.expires_at)
+        if account.cookie:
+            params["cookie"] = account.cookie
+        target_url = f"{callback_url}?{urlencode(params)}"
+        return RedirectResponse(target_url, status_code=307)
 
     @application.patch("/api/accounts/{account_id}/enabled")
     def update_account_enabled(

@@ -986,7 +986,7 @@
                   {{ "手动启用" if not account.manual_enabled else "手动禁用" }}
                 </button>
                 <button class="action" type="button" onclick='refreshOne({{ account.id|tojson }}, {{ account.name|tojson }})'>刷新 Token</button>
-                <button class="action" type="button" onclick='reactivateAccount({{ account.id|tojson }}, {{ account.name|tojson }})'>重新激活</button>
+                <a class="action" href="/api/accounts/{{ account.id }}/switch" target="_blank" rel="noreferrer">切换账号</a>
                 <button class="action" type="button" onclick='openDetailModal({{ account.id|tojson }})'>查看详情</button>
                 <a class="action" href="/api/accounts/{{ account.id }}/download">下载 JSON</a>
                 <button class="action danger" type="button" onclick='deleteAccount({{ account.id|tojson }}, {{ account.name|tojson }})'>删除</button>
@@ -1193,22 +1193,6 @@
       }
     }
 
-    async function reactivateAccount(accountId, accountName) {
-      try {
-        showToast(`正在重新激活 ${accountName} ...`);
-        const response = await fetch(`/api/accounts/${accountId}/reactivate`, {
-          method: 'POST'
-        });
-        const payload = await response.json();
-        showToast(payload.message || '重新激活完成');
-        if (payload.success) {
-          window.setTimeout(() => window.location.reload(), 600);
-        }
-      } catch (error) {
-        console.error(error);
-        showToast('重新激活失败，请稍后重试');
-      }
-    }
 
     async function refreshAll() {
       try {
