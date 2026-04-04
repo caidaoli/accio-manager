@@ -5,6 +5,7 @@
 基于 FastAPI 的本地管理面板，支持：
 
 - 多账号本地保存
+- 支持切换到 MySQL 持久化配置和账号
 - 登录链接生成
 - 登录成功回调保存 Token
 - 独立 OAuth 页面，支持手动粘贴回调地址导入
@@ -89,6 +90,8 @@ docker run -d \
 
 - 容器内服务监听 `0.0.0.0:4097`
 - 默认数据目录是 `/app/data`
+- 未配置数据库连接信息时，配置和账号继续使用本地文件
+- 配置了 `ACCIO_MYSQL` 或完整的 `ACCIO_MYSQL_*` 连接信息后，面板配置和账号会持久化到 MySQL；数据库空表时会在首次启动时从本地文件补种一次
 - 服务器部署时，建议使用 `/oauth` 页面处理登录，并在需要时手动粘贴完整回调 URL 导入账号
 - 新账号在回调导入后，会自动依次触发 `userinfo`、`invitation/query` 和 `channel/query` 完成激活
 
@@ -121,6 +124,23 @@ admin
 
 - `data/config.example.json`
 - `.env.example`
+
+MySQL 环境变量示例：
+
+```text
+ACCIO_MYSQL=mysql://accio:secret@127.0.0.1:3306/accio_manager
+```
+
+或者拆开写：
+
+```text
+ACCIO_MYSQL_HOST=127.0.0.1
+ACCIO_MYSQL_PORT=3306
+ACCIO_MYSQL_DATABASE=accio_manager
+ACCIO_MYSQL_USER=accio
+ACCIO_MYSQL_PASSWORD=secret
+ACCIO_MYSQL_CHARSET=utf8mb4
+```
 
 兼容 API 调用时：
 
@@ -222,6 +242,7 @@ data/
 - `accounts/*.json`：每个账号单独一个文件
 - `accio-accounts.json`：旧版单文件账号列表，首次启动会自动迁移到 `accounts/` 目录
 - 面板支持导入单账号 JSON，也支持直接导入旧版 `accio-accounts.json` 数组文件
+- 数据库模式下，`config.json` 和 `accounts/*.json` 只用于首次补种；运行中的配置和账号以 MySQL 为准
 
 ## 自动调度
 

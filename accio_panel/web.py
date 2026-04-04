@@ -73,6 +73,7 @@ from .openai_proxy import (
     iter_openai_responses_sse_bytes,
     openai_error_payload,
 )
+from .persistence import create_runtime_stores
 from .store import AccountStore
 from .usage_stats import UsageStatsStore
 from .utils import format_timestamp, mask_token
@@ -1180,14 +1181,10 @@ async def _quota_scheduler_loop(application: FastAPI) -> None:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
-    store = AccountStore(settings.accounts_dir, settings.accounts_file)
+    store, panel_settings_store = create_runtime_stores(settings)
     client = AccioClient(settings)
     usage_stats_store = UsageStatsStore(settings.stats_file)
     api_log_store = ApiLogStore(settings.api_logs_file)
-    panel_settings_store = PanelSettingsStore(
-        settings.settings_file,
-        settings.legacy_settings_file,
-    )
     initial_panel_settings = panel_settings_store.load()
 
     application = FastAPI(
@@ -1209,6 +1206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.usage_stats_store = usage_stats_store
     application.state.api_log_store = api_log_store
     application.state.panel_settings_store = panel_settings_store
+    application.state.storage_backend = settings.storage_backend
     application.state.quota_scheduler_task = None
     application.state.proxy_round_robin_index = 0
     application.state.model_catalog_cache = _initial_model_catalog_cache()
@@ -3871,11 +3869,15 @@ def run() -> None:
     print(f"Gemini 模型列表: {effective_api_base_url}/v1beta/models")
     print(f"API 调度: {_api_account_strategy_label(panel_settings.api_account_strategy)}")
     print(f"上游代理: {panel_settings.upstream_proxy_url or '未配置'}")
-    print(f"账号目录: {settings.accounts_dir}")
+    print(f"配置存储: {'MySQL' if settings.database_enabled else '本地文件'}")
+    if settings.database_enabled:
+        print(f"MySQL: {settings.database_summary}")
+    else:
+        print(f"账号目录: {settings.accounts_dir}")
+        print(f"旧版迁移源: {settings.accounts_file}")
+        print(f"配置文件: {settings.settings_file}")
     print(f"统计文件: {settings.stats_file}")
     print(f"日志文件: {settings.api_logs_file}")
-    print(f"旧版迁移源: {settings.accounts_file}")
-    print(f"配置文件: {settings.settings_file}")
     print("=" * 56)
 
     if settings.auto_open_browser:

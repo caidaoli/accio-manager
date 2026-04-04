@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -32,6 +33,15 @@ class Settings:
             os.getenv("ACCIO_DATA_DIR", str(PROJECT_ROOT / "data"))
         )
     )
+    database_url: str = os.getenv("ACCIO_MYSQL", "").strip()
+    mysql_host: str = os.getenv("ACCIO_MYSQL_HOST", "").strip()
+    mysql_port: int = int(os.getenv("ACCIO_MYSQL_PORT", "3306"))
+    mysql_database: str = os.getenv("ACCIO_MYSQL_DATABASE", "").strip()
+    mysql_user: str = os.getenv("ACCIO_MYSQL_USER", "").strip()
+    mysql_password: str = os.getenv("ACCIO_MYSQL_PASSWORD", "")
+    mysql_charset: str = (
+        os.getenv("ACCIO_MYSQL_CHARSET", "utf8mb4").strip() or "utf8mb4"
+    )
 
     @property
     def accounts_file(self) -> Path:
@@ -60,3 +70,32 @@ class Settings:
     @property
     def callback_url(self) -> str:
         return f"http://{self.callback_host}:{self.callback_port}/auth/callback"
+
+    @property
+    def database_enabled(self) -> bool:
+        if self.database_url:
+            return True
+        return bool(self.mysql_host and self.mysql_database and self.mysql_user)
+
+    @property
+    def storage_backend(self) -> str:
+        return "mysql" if self.database_enabled else "file"
+
+    @property
+    def database_summary(self) -> str:
+        if not self.database_enabled:
+            return ""
+
+        if self.database_url:
+            parsed = urlparse(self.database_url)
+            host = parsed.hostname or ""
+            port = parsed.port or 3306
+            database = parsed.path.lstrip("/")
+            user = unquote(parsed.username or "")
+            if host and database:
+                account = f"{user}@" if user else ""
+                return f"{account}{host}:{port}/{database}"
+            return self.database_url
+
+        account = f"{self.mysql_user}@" if self.mysql_user else ""
+        return f"{account}{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"

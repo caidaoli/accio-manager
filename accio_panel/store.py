@@ -16,30 +16,22 @@ from .models import (
 from .utils import new_utdid
 
 
-class AccountStore:
-    def __init__(self, accounts_dir: Path, legacy_file_path: Path | None = None):
-        self.accounts_dir = accounts_dir
-        self.legacy_file_path = legacy_file_path
+class BaseAccountStore:
+    def __init__(self):
         self._lock = threading.RLock()
         self._ensure_storage()
 
     def _ensure_storage(self) -> None:
-        self.accounts_dir.mkdir(parents=True, exist_ok=True)
-        self._migrate_legacy_if_needed()
+        return None
 
-    def _account_file(self, account_id: str) -> Path:
-        return self.accounts_dir / f"{account_id}.json"
+    def _read_all_unlocked(self) -> list[Account]:
+        raise NotImplementedError
 
-    def _list_account_files_unlocked(self) -> list[Path]:
-        self.accounts_dir.mkdir(parents=True, exist_ok=True)
-        return sorted(
-            (
-                path
-                for path in self.accounts_dir.glob("*.json")
-                if path.is_file()
-            ),
-            key=lambda item: item.name,
-        )
+    def _write_account_unlocked(self, account: Account) -> None:
+        raise NotImplementedError
+
+    def _delete_account_unlocked(self, account_id: str) -> bool:
+        raise NotImplementedError
 
     def _normalize_account(self, account: Account) -> bool:
         changed = False
@@ -60,79 +52,11 @@ class AccountStore:
                 changed = True
         return changed
 
-    def _load_account_file_unlocked(self, file_path: Path) -> Account | None:
-        try:
-            raw = file_path.read_text(encoding="utf-8").strip() or "{}"
-            payload = json.loads(raw)
-        except (OSError, json.JSONDecodeError):
-            return None
-
-        if not isinstance(payload, dict):
-            return None
-
-        account = Account.from_dict(payload)
-        if self._normalize_account(account):
-            self._write_account_unlocked(account)
-        return account
-
-    def _write_account_unlocked(self, account: Account) -> None:
-        self._normalize_account(account)
-        self._account_file(account.id).write_text(
-            json.dumps(account.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def _delete_account_unlocked(self, account_id: str) -> bool:
-        account_file = self._account_file(account_id)
-        if not account_file.exists():
-            return False
-        account_file.unlink()
-        return True
-
-    def _load_legacy_accounts_unlocked(self) -> list[Account]:
-        if not self.legacy_file_path or not self.legacy_file_path.exists():
-            return []
-
-        raw = self.legacy_file_path.read_text(encoding="utf-8").strip() or "[]"
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            payload = []
-
-        if not isinstance(payload, list):
-            payload = []
-
-        accounts: list[Account] = []
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            account = Account.from_dict(item)
-            self._normalize_account(account)
-            accounts.append(account)
-        return accounts
-
-    def _migrate_legacy_if_needed(self) -> None:
-        if not self.legacy_file_path or not self.legacy_file_path.exists():
-            return
-
-        if self._list_account_files_unlocked():
-            return
-
-        for account in self._load_legacy_accounts_unlocked():
-            self._write_account_unlocked(account)
-
-    def _read_all_unlocked(self) -> list[Account]:
-        self._ensure_storage()
-        accounts = [
-            account
-            for account in (
-                self._load_account_file_unlocked(file_path)
-                for file_path in self._list_account_files_unlocked()
-            )
-            if account is not None
-        ]
-        accounts.sort(key=lambda item: (item.added_at, item.name, item.id))
-        return accounts
+    def _get_account_unlocked(self, account_id: str) -> Account | None:
+        for account in self._read_all_unlocked():
+            if account.id == account_id:
+                return account
+        return None
 
     def list_accounts(self) -> list[Account]:
         with self._lock:
@@ -140,7 +64,7 @@ class AccountStore:
 
     def get_account(self, account_id: str) -> Account | None:
         with self._lock:
-            return self._load_account_file_unlocked(self._account_file(account_id))
+            return self._get_account_unlocked(account_id)
 
     def save(self, account: Account) -> Account:
         with self._lock:
@@ -178,6 +102,7 @@ class AccountStore:
     ) -> dict[str, Any]:
         with self._lock:
             accounts = self._read_all_unlocked()
+            existing_ids = {account.id for account in accounts if account.id}
             created_count = 0
             updated_count = 0
             failures: list[str] = []
@@ -230,12 +155,13 @@ class AccountStore:
                     updated_count += 1
                     continue
 
-                while self._account_file(imported.id).exists():
+                while not imported.id or imported.id in existing_ids:
                     imported.id = uuid.uuid4().hex
 
                 imported.updated_at = now
                 self._write_account_unlocked(imported)
                 accounts.append(imported)
+                existing_ids.add(imported.id)
                 created_count += 1
 
             return {
@@ -283,6 +209,7 @@ class AccountStore:
                     self._write_account_unlocked(account)
                     return account, False
 
+            existing_ids = {account.id for account in accounts if account.id}
             account = Account(
                 id=uuid.uuid4().hex,
                 name=self._next_account_name(accounts),
@@ -294,6 +221,8 @@ class AccountStore:
                 added_at=now,
                 updated_at=now,
             )
+            while account.id in existing_ids:
+                account.id = uuid.uuid4().hex
             self._write_account_unlocked(account)
             return account, True
 
@@ -306,7 +235,7 @@ class AccountStore:
         expires_at: str | int | None,
     ) -> Account | None:
         with self._lock:
-            account = self.get_account(account_id)
+            account = self._get_account_unlocked(account_id)
             if not account:
                 return None
             account.access_token = access_token
@@ -318,7 +247,7 @@ class AccountStore:
 
     def rename(self, account_id: str, name: str) -> Account | None:
         with self._lock:
-            account = self.get_account(account_id)
+            account = self._get_account_unlocked(account_id)
             if not account:
                 return None
             account.name = name
@@ -328,7 +257,7 @@ class AccountStore:
 
     def set_fill_priority(self, account_id: str, fill_priority: int) -> Account | None:
         with self._lock:
-            account = self.get_account(account_id)
+            account = self._get_account_unlocked(account_id)
             if not account:
                 return None
             account.fill_priority = normalize_fill_priority(fill_priority)
@@ -338,7 +267,7 @@ class AccountStore:
 
     def set_manual_enabled(self, account_id: str, enabled: bool) -> Account | None:
         with self._lock:
-            account = self.get_account(account_id)
+            account = self._get_account_unlocked(account_id)
             if not account:
                 return None
             account.manual_enabled = enabled
@@ -355,7 +284,7 @@ class AccountStore:
         reason: str | None = None,
     ) -> Account | None:
         with self._lock:
-            account = self.get_account(account_id)
+            account = self._get_account_unlocked(account_id)
             if not account:
                 return None
             account.auto_disabled = auto_disabled
@@ -403,16 +332,13 @@ class AccountStore:
 
         normalized_reason = reason_text.lower()
         is_abnormal_reason = (
-            "auth not pass" in normalized_reason
-            or "请手动处理" in reason_text
+            "auth not pass" in normalized_reason or "请手动处理" in reason_text
         )
         if not is_abnormal_reason:
             return False
 
-        # 账号当前处于自动禁用状态
         if account.auto_disabled:
             return True
-        # 账号已被手动禁用（manualEnabled=false），但 reason 仍残留异常信息
         if not account.manual_enabled:
             return True
         return False
@@ -427,10 +353,9 @@ class AccountStore:
 
     def delete_abnormal_auto_disabled_accounts(self) -> dict[str, Any]:
         with self._lock:
-            accounts = self._read_all_unlocked()
             matched_accounts = [
                 account
-                for account in accounts
+                for account in self._read_all_unlocked()
                 if self._is_abnormal_auto_disabled_unlocked(account)
             ]
             deleted_ids: list[str] = []
@@ -456,3 +381,102 @@ class AccountStore:
     def delete(self, account_id: str) -> bool:
         with self._lock:
             return self._delete_account_unlocked(account_id)
+
+
+class AccountStore(BaseAccountStore):
+    def __init__(self, accounts_dir: Path, legacy_file_path: Path | None = None):
+        self.accounts_dir = accounts_dir
+        self.legacy_file_path = legacy_file_path
+        super().__init__()
+
+    def _ensure_storage(self) -> None:
+        self.accounts_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_if_needed()
+
+    def _account_file(self, account_id: str) -> Path:
+        return self.accounts_dir / f"{account_id}.json"
+
+    def _list_account_files_unlocked(self) -> list[Path]:
+        self.accounts_dir.mkdir(parents=True, exist_ok=True)
+        return sorted(
+            (
+                path
+                for path in self.accounts_dir.glob("*.json")
+                if path.is_file()
+            ),
+            key=lambda item: item.name,
+        )
+
+    def _load_account_file_unlocked(self, file_path: Path) -> Account | None:
+        try:
+            raw = file_path.read_text(encoding="utf-8").strip() or "{}"
+            payload = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        account = Account.from_dict(payload)
+        if self._normalize_account(account):
+            self._write_account_unlocked(account)
+        return account
+
+    def _write_account_unlocked(self, account: Account) -> None:
+        self._normalize_account(account)
+        self._account_file(account.id).write_text(
+            json.dumps(account.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _delete_account_unlocked(self, account_id: str) -> bool:
+        account_file = self._account_file(account_id)
+        if not account_file.exists():
+            return False
+        account_file.unlink()
+        return True
+
+    def _load_legacy_accounts_unlocked(self) -> list[Account]:
+        if not self.legacy_file_path or not self.legacy_file_path.exists():
+            return []
+
+        try:
+            raw = self.legacy_file_path.read_text(encoding="utf-8").strip() or "[]"
+            payload = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            payload = []
+
+        if not isinstance(payload, list):
+            payload = []
+
+        accounts: list[Account] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            account = Account.from_dict(item)
+            self._normalize_account(account)
+            accounts.append(account)
+        return accounts
+
+    def _migrate_legacy_if_needed(self) -> None:
+        if not self.legacy_file_path or not self.legacy_file_path.exists():
+            return
+
+        if self._list_account_files_unlocked():
+            return
+
+        for account in self._load_legacy_accounts_unlocked():
+            self._write_account_unlocked(account)
+
+    def _read_all_unlocked(self) -> list[Account]:
+        self._ensure_storage()
+        accounts = [
+            account
+            for account in (
+                self._load_account_file_unlocked(file_path)
+                for file_path in self._list_account_files_unlocked()
+            )
+            if account is not None
+        ]
+        accounts.sort(key=lambda item: (item.added_at, item.name, item.id))
+        return accounts

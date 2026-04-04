@@ -79,6 +79,55 @@ class PanelSettings:
         }
 
 
+def load_panel_settings(payload: dict[str, object] | None) -> tuple[PanelSettings, bool]:
+    normalized_payload = payload if isinstance(payload, dict) else {}
+    settings = PanelSettings.from_dict(normalized_payload)
+    changed = False
+
+    try:
+        normalized_proxy = normalize_upstream_proxy_url(
+            normalized_payload.get("upstreamProxyUrl")
+        )
+    except ValueError:
+        normalized_proxy = ""
+        changed = True
+    if settings.upstream_proxy_url != normalized_proxy:
+        settings.upstream_proxy_url = normalized_proxy
+        changed = True
+
+    raw_strategy = str(
+        normalized_payload.get("apiAccountStrategy", DEFAULT_API_ACCOUNT_STRATEGY)
+    ).strip().lower()
+    raw_strategy = raw_strategy.replace("-", "_")
+    if "apiAccountStrategy" not in normalized_payload or (
+        normalize_api_account_strategy(normalized_payload.get("apiAccountStrategy"))
+        != raw_strategy
+    ):
+        changed = True
+
+    if not settings.admin_password:
+        settings.admin_password = DEFAULT_ADMIN_PASSWORD
+        changed = True
+    if not settings.session_secret:
+        settings.session_secret = secrets.token_urlsafe(32)
+        changed = True
+    return settings, changed
+
+
+def normalize_panel_settings(settings: PanelSettings) -> PanelSettings:
+    if not settings.admin_password:
+        settings.admin_password = DEFAULT_ADMIN_PASSWORD
+    settings.upstream_proxy_url = normalize_upstream_proxy_url(
+        settings.upstream_proxy_url
+    )
+    settings.api_account_strategy = normalize_api_account_strategy(
+        settings.api_account_strategy
+    )
+    if not settings.session_secret:
+        settings.session_secret = secrets.token_urlsafe(32)
+    return settings
+
+
 class PanelSettingsStore:
     def __init__(self, file_path: Path, legacy_file_path: Path | None = None):
         self.file_path = file_path
@@ -96,54 +145,21 @@ class PanelSettingsStore:
         return payload
 
     def load(self) -> PanelSettings:
-        payload: dict[str, object]
+        payload: dict[str, object] | None
         if self.file_path.exists():
             payload = self._load_payload(self.file_path)
         elif self.legacy_file_path and self.legacy_file_path.exists():
             payload = self._load_payload(self.legacy_file_path)
         else:
-            payload = {}
+            payload = None
 
-        settings = PanelSettings.from_dict(payload)
-        changed = False
-        try:
-            normalized_proxy = normalize_upstream_proxy_url(payload.get("upstreamProxyUrl"))
-        except ValueError:
-            normalized_proxy = ""
-            changed = True
-        if settings.upstream_proxy_url != normalized_proxy:
-            settings.upstream_proxy_url = normalized_proxy
-            changed = True
-        raw_strategy = str(
-            payload.get("apiAccountStrategy", DEFAULT_API_ACCOUNT_STRATEGY)
-        ).strip().lower()
-        raw_strategy = raw_strategy.replace("-", "_")
-        if "apiAccountStrategy" not in payload or (
-            normalize_api_account_strategy(payload.get("apiAccountStrategy"))
-            != raw_strategy
-        ):
-            changed = True
-        if not settings.admin_password:
-            settings.admin_password = DEFAULT_ADMIN_PASSWORD
-            changed = True
-        if not settings.session_secret:
-            settings.session_secret = secrets.token_urlsafe(32)
-            changed = True
+        settings, changed = load_panel_settings(payload)
         if changed or not self.file_path.exists():
             self.save(settings)
         return settings
 
     def save(self, settings: PanelSettings) -> PanelSettings:
-        if not settings.admin_password:
-            settings.admin_password = DEFAULT_ADMIN_PASSWORD
-        settings.upstream_proxy_url = normalize_upstream_proxy_url(
-            settings.upstream_proxy_url
-        )
-        settings.api_account_strategy = normalize_api_account_strategy(
-            settings.api_account_strategy
-        )
-        if not settings.session_secret:
-            settings.session_secret = secrets.token_urlsafe(32)
+        settings = normalize_panel_settings(settings)
         self.file_path.write_text(
             json.dumps(settings.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
