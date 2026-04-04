@@ -357,17 +357,25 @@ class AccountStore:
             return account
 
     def _is_abnormal_auto_disabled_unlocked(self, account: Account) -> bool:
-        if not account.auto_disabled:
-            return False
         reason_text = str(account.auto_disabled_reason or "").strip()
         if not reason_text:
             return False
 
         normalized_reason = reason_text.lower()
-        return (
+        is_abnormal_reason = (
             "auth not pass" in normalized_reason
             or "请手动处理" in reason_text
         )
+        if not is_abnormal_reason:
+            return False
+
+        # 账号当前处于自动禁用状态
+        if account.auto_disabled:
+            return True
+        # 账号已被手动禁用（manualEnabled=false），但 reason 仍残留异常信息
+        if not account.manual_enabled:
+            return True
+        return False
 
     def list_abnormal_auto_disabled_accounts(self) -> list[Account]:
         with self._lock:

@@ -1,5 +1,7 @@
 # Accio 多账号管理面板
 
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-社区认可-blue?style=flat-square&logo=linux)](https://linux.do)
+
 基于 FastAPI 的本地管理面板，支持：
 
 - 多账号本地保存
