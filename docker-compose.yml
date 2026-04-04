@@ -1,0 +1,15 @@
+services:
+  accio-panel:
+    build: .
+    image: accio-panel:latest
+    container_name: accio-panel
+    restart: unless-stopped
+    ports:
+      - "4097:4097"
+    volumes:
+      - accio-panel-data:/app/data
+    environment:
+      ACCIO_CALLBACK_HOST: "127.0.0.1"
+
+volumes:
+  accio-panel-data:
