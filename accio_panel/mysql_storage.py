@@ -299,6 +299,7 @@ class MySQLPanelSettingsStore:
     def __init__(self, gateway: MySQLGateway):
         self.gateway = gateway
         self._lock = threading.RLock()
+        self._cache: PanelSettings | None = None
         self.gateway.ensure_schema()
 
     def bootstrap_from_file_if_empty(self, file_store) -> None:
@@ -307,17 +308,25 @@ class MySQLPanelSettingsStore:
                 return
             self.save(file_store.load())
 
+    def _warm_cache(self) -> PanelSettings:
+        payload = self.gateway.fetch_panel_settings()
+        settings, changed = load_panel_settings(payload)
+        if changed or payload is None:
+            settings = normalize_panel_settings(settings)
+            self.gateway.save_panel_settings(settings.to_dict())
+        self._cache = settings
+        return settings
+
     def load(self) -> PanelSettings:
         with self._lock:
-            payload = self.gateway.fetch_panel_settings()
-            settings, changed = load_panel_settings(payload)
-            if changed or payload is None:
-                self.save(settings)
-            return settings
+            if self._cache is not None:
+                return self._cache
+            return self._warm_cache()
 
     def save(self, settings: PanelSettings) -> PanelSettings:
         with self._lock:
             settings = normalize_panel_settings(settings)
+            self._cache = settings
             self.gateway.save_panel_settings(settings.to_dict())
             return settings
 
@@ -325,19 +334,55 @@ class MySQLPanelSettingsStore:
 class MySQLAccountStore(BaseAccountStore):
     def __init__(self, gateway: MySQLGateway):
         self.gateway = gateway
+        self._accounts_cache: list[Account] | None = None
+        self._accounts_by_id: dict[str, Account] = {}
         super().__init__()
 
     def _ensure_storage(self) -> None:
         self.gateway.ensure_schema()
 
+    def _rebuild_index(self, accounts: list[Account]) -> None:
+        self._accounts_by_id = {a.id: a for a in accounts}
+
+    def _warm_cache(self) -> list[Account]:
+        accounts = [
+            Account.from_dict(payload) for payload in self.gateway.list_accounts()
+        ]
+        self._accounts_cache = accounts
+        self._rebuild_index(accounts)
+        return accounts
+
     def _read_all_unlocked(self) -> list[Account]:
-        return [Account.from_dict(payload) for payload in self.gateway.list_accounts()]
+        if self._accounts_cache is not None:
+            return list(self._accounts_cache)
+        return self._warm_cache()
+
+    def _get_account_unlocked(self, account_id: str) -> Account | None:
+        if self._accounts_cache is None:
+            self._warm_cache()
+        return self._accounts_by_id.get(account_id)
 
     def _write_account_unlocked(self, account: Account) -> None:
         self._normalize_account(account)
+        # Update cache
+        if self._accounts_cache is not None:
+            existing = self._accounts_by_id.get(account.id)
+            if existing is not None:
+                idx = self._accounts_cache.index(existing)
+                self._accounts_cache[idx] = account
+            else:
+                self._accounts_cache.append(account)
+            self._accounts_by_id[account.id] = account
+        # Write-through to MySQL
         self.gateway.upsert_account(account.to_dict())
 
     def _delete_account_unlocked(self, account_id: str) -> bool:
+        # Update cache
+        if self._accounts_cache is not None:
+            existing = self._accounts_by_id.pop(account_id, None)
+            if existing is not None:
+                self._accounts_cache.remove(existing)
+        # Write-through to MySQL
         return self.gateway.delete_account(account_id)
 
     def bootstrap_from_file_if_empty(self, file_store) -> None:
@@ -346,6 +391,9 @@ class MySQLAccountStore(BaseAccountStore):
                 return
             for account in file_store.list_accounts():
                 self._write_account_unlocked(account)
+            # Invalidate cache so next read picks up bootstrapped data
+            self._accounts_cache = None
+            self._accounts_by_id = {}
 
 
 def _parse_database_url(url: str) -> dict[str, Any]:
