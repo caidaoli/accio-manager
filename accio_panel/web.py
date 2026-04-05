@@ -7,7 +7,7 @@ import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -896,10 +896,16 @@ def _parse_billing_timestamp(value: Any) -> int | None:
     if not text:
         return None
 
-    normalized = text.replace("T", " ").replace("Z", "")
+    is_utc = text.endswith("Z") or "+00:00" in text or "+0000" in text
+    normalized = (
+        text.replace("T", " ").replace("Z", "").replace("+00:00", "").replace("+0000", "")
+    )
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
-            return int(datetime.strptime(normalized, fmt).timestamp())
+            dt = datetime.strptime(normalized, fmt)
+            if is_utc:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp())
         except ValueError:
             continue
     return None

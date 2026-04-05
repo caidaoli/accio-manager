@@ -27,7 +27,10 @@ def format_countdown_hours(seconds: int | float | None) -> str:
     if seconds in (None, "", 0):
         return "-"
     try:
-        hours = round(float(seconds) / 3600, 1)
+        total = float(seconds)
     except (TypeError, ValueError):
         return "-"
+    if total <= 0:
+        return "即将重置"
+    hours = round(total / 3600, 1)
     return f"{hours} 小时后"
