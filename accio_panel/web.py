@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 import requests
 import uvicorn
 from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -279,6 +280,15 @@ def _sorted_enabled_accounts(store: AccountStore) -> list[Account]:
         _ordered_proxy_candidates(store),
         key=lambda item: (item.fill_priority, item.name, item.id),
     )
+
+
+def _should_disable_model_on_empty_response(
+    payload: Any,
+    model_name: str,
+) -> bool:
+    if str(model_name or "").strip().lower().startswith("claude"):
+        return False
+    return True
 
 
 def _query_llm_config_with_refresh_fallback(
@@ -1365,6 +1375,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_age=60 * 60 * 24 * 7,
         https_only=False,
     )
+    if settings.allowed_origins:
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.allowed_origins),
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=[
+                "x-accio-model-source",
+                "x-accio-account-id",
+                "x-accio-account-strategy",
+                "x-accio-account-remaining",
+            ],
+        )
     application.state.settings = settings
     application.state.store = store
     application.state.client = client
@@ -2504,6 +2528,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not isinstance(payload, dict):
             return _openai_error_response(400, "请求体必须是 JSON 对象。")
         model = str(payload.get("model") or DEFAULT_ANTHROPIC_MODEL)
+        disable_on_empty_response = _should_disable_model_on_empty_response(
+            payload,
+            model,
+        )
         requested_stream = bool(payload.get("stream", False))
         allowed, available = _is_allowed_dynamic_model(
             application,
@@ -2710,7 +2738,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 def on_openai_responses_complete(summary: dict[str, Any]) -> None:
                     usage = summary.get("usage") if isinstance(summary.get("usage"), dict) else {}
                     empty_response = _is_stream_summary_empty(summary)
-                    if empty_response:
+                    if empty_response and disable_on_empty_response:
                         _disable_account_model_on_empty_response(
                             store,
                             selected_account,
@@ -2861,7 +2889,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not isinstance(usage, dict):
             usage = {}
         output_summary = _summarize_non_stream_payload(response_payload)
-        if output_summary["empty_response"]:
+        if output_summary["empty_response"] and disable_on_empty_response:
             _disable_account_model_on_empty_response(
                 store,
                 account,
@@ -3070,6 +3098,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return _openai_error_response(400, "请求体必须是 JSON 对象。")
 
         model = str(payload.get("model") or DEFAULT_ANTHROPIC_MODEL)
+        disable_on_empty_response = _should_disable_model_on_empty_response(
+            payload,
+            model,
+        )
         requested_stream = bool(payload.get("stream", False))
         messages_value = payload.get("messages")
         messages_count = len(messages_value) if isinstance(messages_value, list) else 0
@@ -3256,7 +3288,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 def on_openai_stream_complete(summary: dict[str, Any]) -> None:
                     usage = summary.get("usage") if isinstance(summary.get("usage"), dict) else {}
                     empty_response = _is_stream_summary_empty(summary)
-                    if empty_response:
+                    if empty_response and disable_on_empty_response:
                         _disable_account_model_on_empty_response(
                             store,
                             selected_account,
@@ -3402,7 +3434,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not isinstance(usage, dict):
             usage = {}
         output_summary = _summarize_non_stream_payload(response_payload)
-        if output_summary["empty_response"]:
+        if output_summary["empty_response"] and disable_on_empty_response:
             _disable_account_model_on_empty_response(
                 store,
                 account,
@@ -3621,6 +3653,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         model = str(payload.get("model") or DEFAULT_ANTHROPIC_MODEL)
+        disable_on_empty_response = _should_disable_model_on_empty_response(
+            payload,
+            model,
+        )
         requested_stream = bool(payload.get("stream", False))
         messages_value = payload.get("messages")
         messages_count = len(messages_value) if isinstance(messages_value, list) else 0
@@ -3794,7 +3830,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     if not isinstance(usage, dict):
                         usage = {}
                     empty_response = _is_stream_summary_empty(summary)
-                    if empty_response:
+                    if empty_response and disable_on_empty_response:
                         _disable_account_model_on_empty_response(
                             store,
                             selected_account,
@@ -3931,7 +3967,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not isinstance(usage, dict):
             usage = {}
         output_summary = _summarize_non_stream_payload(response_payload)
-        if output_summary["empty_response"]:
+        if output_summary["empty_response"] and disable_on_empty_response:
             _disable_account_model_on_empty_response(
                 store,
                 account,

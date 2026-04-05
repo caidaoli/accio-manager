@@ -42,6 +42,14 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_list(name: str) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None:
+        return ()
+    items = [item.strip() for item in raw.split(",")]
+    return tuple(item for item in items if item)
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     version: str = os.getenv("ACCIO_VERSION", "0.5.4")
@@ -51,6 +59,9 @@ class Settings:
     callback_port: int = int(os.getenv("ACCIO_CALLBACK_PORT", "4097"))
     request_timeout: float = float(os.getenv("ACCIO_REQUEST_TIMEOUT", "15"))
     auto_open_browser: bool = _env_flag("ACCIO_AUTO_OPEN_BROWSER", True)
+    allowed_origins: tuple[str, ...] = field(
+        default_factory=lambda: _env_list("ACCIO_ALLOWED_ORIGINS")
+    )
     data_dir: Path = field(default_factory=_default_data_dir)
     database_url: str = os.getenv("ACCIO_MYSQL", "").strip()
 

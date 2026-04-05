@@ -374,7 +374,7 @@ class ProxyRoutingTests(unittest.TestCase):
                     app,
                     headers={"x-api-key": "admin"},
                     payload={
-                        "model": "claude-opus-4-6",
+                        "model": "deepseek-r1",
                         "stream": True,
                         "messages": [{"role": "user", "content": "hello"}],
                     },
@@ -387,7 +387,7 @@ class ProxyRoutingTests(unittest.TestCase):
             self.assertEqual(fake_client.calls, ["acc-1", "acc-2"])
             disabled_account = store.get_account("acc-1")
             self.assertIsNotNone(disabled_account)
-            self.assertIn("claude-opus-4-6", disabled_account.disabled_models)
+            self.assertIn("deepseek-r1", disabled_account.disabled_models)
 
 
 if __name__ == "__main__":
