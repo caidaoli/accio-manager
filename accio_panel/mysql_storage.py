@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from contextlib import contextmanager
 from typing import Any
@@ -145,11 +146,22 @@ class MySQLGateway:
                         last_quota_check_at BIGINT NULL,
                         next_quota_check_at BIGINT NULL,
                         next_quota_check_reason TEXT NULL,
+                        disabled_models LONGTEXT NULL,
                         added_at VARCHAR(19) NOT NULL,
                         updated_at VARCHAR(19) NOT NULL
                     ) DEFAULT CHARSET=utf8mb4
                     """
                 )
+                cursor.execute(
+                    "SHOW COLUMNS FROM accio_accounts LIKE 'disabled_models'"
+                )
+                if cursor.fetchone() is None:
+                    cursor.execute(
+                        """
+                        ALTER TABLE accio_accounts
+                        ADD COLUMN disabled_models LONGTEXT NULL
+                        """
+                    )
 
     def fetch_panel_settings(self) -> dict[str, object] | None:
         with self._connect() as connection:
@@ -244,6 +256,7 @@ class MySQLGateway:
                         last_quota_check_at,
                         next_quota_check_at,
                         next_quota_check_reason,
+                        disabled_models,
                         added_at,
                         updated_at
                     FROM accio_accounts
@@ -274,9 +287,10 @@ class MySQLGateway:
                         last_quota_check_at,
                         next_quota_check_at,
                         next_quota_check_reason,
+                        disabled_models,
                         added_at,
                         updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                         name = VALUES(name),
                         access_token = VALUES(access_token),
@@ -291,6 +305,7 @@ class MySQLGateway:
                         last_quota_check_at = VALUES(last_quota_check_at),
                         next_quota_check_at = VALUES(next_quota_check_at),
                         next_quota_check_reason = VALUES(next_quota_check_reason),
+                        disabled_models = VALUES(disabled_models),
                         added_at = VALUES(added_at),
                         updated_at = VALUES(updated_at)
                     """,
@@ -309,6 +324,10 @@ class MySQLGateway:
                         payload.get("lastQuotaCheckAt"),
                         payload.get("nextQuotaCheckAt"),
                         payload.get("nextQuotaCheckReason"),
+                        json.dumps(
+                            payload.get("disabledModels") or {},
+                            ensure_ascii=False,
+                        ),
                         str(payload.get("addedAt") or ""),
                         str(payload.get("updatedAt") or ""),
                     ),
@@ -461,6 +480,12 @@ def _parse_database_url(url: str) -> dict[str, Any]:
 
 
 def _account_row_to_payload(row: dict[str, Any]) -> dict[str, object]:
+    disabled_models = row.get("disabled_models")
+    if isinstance(disabled_models, str):
+        try:
+            disabled_models = json.loads(disabled_models)
+        except json.JSONDecodeError:
+            disabled_models = {}
     return {
         "id": str(row.get("id") or ""),
         "name": str(row.get("name") or ""),
@@ -476,6 +501,7 @@ def _account_row_to_payload(row: dict[str, Any]) -> dict[str, object]:
         "lastQuotaCheckAt": row.get("last_quota_check_at"),
         "nextQuotaCheckAt": row.get("next_quota_check_at"),
         "nextQuotaCheckReason": row.get("next_quota_check_reason"),
+        "disabledModels": disabled_models if isinstance(disabled_models, (dict, list)) else {},
         "addedAt": str(row.get("added_at") or ""),
         "updatedAt": str(row.get("updated_at") or ""),
     }

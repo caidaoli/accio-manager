@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import json
 import threading
 import time
@@ -9,7 +10,7 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 from urllib.parse import parse_qsl, urlencode, urlparse
 
 import requests
@@ -577,6 +578,7 @@ def _ordered_proxy_candidates(
         account
         for account in store.list_accounts()
         if account.manual_enabled
+        and not account.auto_disabled
         and not _account_model_disabled_reason(
             account,
             model_name,
@@ -867,6 +869,112 @@ def _summarize_non_stream_payload(payload: dict[str, Any]) -> dict[str, int | bo
         "tool_use_blocks": tool_use_blocks,
         "empty_response": text_chars <= 0 and tool_use_blocks <= 0,
     }
+
+
+def _parse_sse_chunk_payloads(chunk: bytes | str) -> list[dict[str, Any] | str]:
+    text = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+    payloads: list[dict[str, Any] | str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        data_text = line[5:].strip()
+        if not data_text:
+            continue
+        if data_text == "[DONE]":
+            payloads.append("[DONE]")
+            continue
+        try:
+            parsed = json.loads(data_text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            payloads.append(parsed)
+    return payloads
+
+
+def _anthropic_stream_chunk_has_meaningful_output(chunk: bytes | str) -> bool:
+    text = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+    event_name = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("event:"):
+            event_name = line[6:].strip()
+            break
+
+    payloads = [
+        payload
+        for payload in _parse_sse_chunk_payloads(chunk)
+        if isinstance(payload, dict)
+    ]
+    if not payloads:
+        return False
+    payload = payloads[0]
+    if event_name == "content_block_start":
+        block = payload.get("content_block")
+        return isinstance(block, dict) and str(block.get("type") or "") == "tool_use"
+    if event_name == "content_block_delta":
+        delta = payload.get("delta")
+        if not isinstance(delta, dict):
+            return False
+        return bool(delta.get("text")) or str(delta.get("type") or "") == "input_json_delta"
+    return False
+
+
+def _openai_chat_chunk_has_meaningful_output(chunk: bytes | str) -> bool:
+    for payload in _parse_sse_chunk_payloads(chunk):
+        if not isinstance(payload, dict):
+            continue
+        choices = payload.get("choices")
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            if str(delta.get("content") or ""):
+                return True
+            tool_calls = delta.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                return True
+    return False
+
+
+def _openai_responses_chunk_has_meaningful_output(chunk: bytes | str) -> bool:
+    for payload in _parse_sse_chunk_payloads(chunk):
+        if not isinstance(payload, dict):
+            continue
+        event_type = str(payload.get("type") or "")
+        if event_type == "response.output_text.delta" and str(payload.get("delta") or ""):
+            return True
+        if event_type == "response.output_item.added":
+            item = payload.get("item")
+            if isinstance(item, dict) and str(item.get("type") or "") == "tool_call":
+                return True
+    return False
+
+
+def _gemini_stream_chunk_has_meaningful_output(chunk: bytes | str) -> bool:
+    for payload in _parse_sse_chunk_payloads(chunk):
+        if not isinstance(payload, dict):
+            continue
+        return not bool(summarize_gemini_response(payload)["empty_response"])
+    return False
+
+
+def _prefetch_stream_until_meaningful(
+    stream_bytes: Iterator[bytes],
+    *,
+    chunk_has_meaningful_output: Callable[[bytes | str], bool],
+) -> tuple[list[bytes], Iterator[bytes], bool]:
+    prefetched: list[bytes] = []
+    for chunk in stream_bytes:
+        prefetched.append(chunk)
+        if chunk_has_meaningful_output(chunk):
+            return prefetched, stream_bytes, True
+    return prefetched, stream_bytes, False
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -1473,11 +1581,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 error_status="UNAVAILABLE",
             )
 
-        response_headers = {
-            "x-accio-account-id": account.id,
-            "x-accio-account-strategy": panel_settings.api_account_strategy,
-        }
-
         if not upstream_response.ok:
             upstream_text = ""
             with contextlib.suppress(Exception):
@@ -1521,65 +1624,156 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         if requested_stream:
-            def on_gemini_stream_complete(summary: dict[str, Any]) -> None:
-                usage = summary.get("usage") if isinstance(summary.get("usage"), dict) else {}
-                empty_response = bool(summary.get("empty_response"))
-                if empty_response:
-                    _disable_account_model_on_empty_response(
-                        store,
-                        account,
+            def _stream_headers(
+                selected_account: Account,
+                selected_quota: dict[str, Any],
+            ) -> dict[str, str]:
+                return {
+                    "x-accio-account-id": selected_account.id,
+                    "x-accio-account-strategy": panel_settings.api_account_strategy,
+                }
+
+            def _build_stream_attempt(
+                selected_account: Account,
+                selected_quota: dict[str, Any],
+                selected_response: requests.Response,
+                selected_request_id: str,
+            ) -> tuple[Iterator[bytes], bool]:
+                def on_gemini_stream_complete(summary: dict[str, Any]) -> None:
+                    usage = summary.get("usage") if isinstance(summary.get("usage"), dict) else {}
+                    empty_response = bool(summary.get("empty_response"))
+                    if empty_response:
+                        _disable_account_model_on_empty_response(
+                            store,
+                            selected_account,
+                            normalized_model_name,
+                            provider="gemini",
+                        )
+                    usage_stats_store.record_message(
+                        account_id=selected_account.id,
+                        model=normalized_model_name,
+                        input_tokens=int(usage.get("input_tokens") or 0),
+                        output_tokens=int(usage.get("output_tokens") or 0),
+                        success=True,
+                        stop_reason=str(summary.get("stop_reason") or "STOP"),
+                    )
+                    api_log_store.record(
+                        {
+                            "level": "warn" if empty_response else "info",
+                            "event": "gemini_generate_content",
+                            "success": True,
+                            "emptyResponse": empty_response,
+                            "accountId": selected_account.id,
+                            "accountName": selected_account.name,
+                            "fillPriority": selected_account.fill_priority,
+                            "model": normalized_model_name,
+                            "stream": True,
+                            "strategy": panel_settings.api_account_strategy,
+                            "requestId": selected_request_id,
+                            "message": (
+                                f"空回复，已禁用模型 {normalized_model_name}"
+                                if empty_response
+                                else "Gemini 流式兼容调用完成"
+                            ),
+                            "statusCode": 200,
+                            "stopReason": str(summary.get("stop_reason") or "STOP"),
+                            "inputTokens": int(usage.get("input_tokens") or 0),
+                            "outputTokens": int(usage.get("output_tokens") or 0),
+                            "remainingQuota": selected_quota.get("remaining_value"),
+                            "usedQuota": selected_quota.get("used_value"),
+                            "messagesCount": messages_count,
+                            "imageBlocks": int(summary.get("image_blocks") or 0),
+                            "textChars": int(summary.get("text_chars") or 0),
+                            "toolUseBlocks": int(summary.get("tool_use_blocks") or 0),
+                            "durationMs": int((time.perf_counter() - started_at) * 1000),
+                        }
+                    )
+
+                stream_bytes = iter_gemini_generate_content_sse_bytes(
+                    selected_response,
+                    normalized_model_name,
+                    on_complete=on_gemini_stream_complete,
+                )
+                prefetched_chunks, remaining_chunks, has_meaningful_output = (
+                    _prefetch_stream_until_meaningful(
+                        stream_bytes,
+                        chunk_has_meaningful_output=_gemini_stream_chunk_has_meaningful_output,
+                    )
+                )
+                return (
+                    itertools.chain(prefetched_chunks, remaining_chunks),
+                    has_meaningful_output,
+                )
+
+            stream_account = account
+            stream_quota = quota
+            stream_bytes, has_meaningful_output = _build_stream_attempt(
+                stream_account,
+                stream_quota,
+                upstream_response,
+                request_id,
+            )
+            if not has_meaningful_output:
+                try:
+                    retry_account, retry_quota = await asyncio.to_thread(
+                        _select_proxy_account,
+                        application,
+                        panel_settings,
                         normalized_model_name,
                         provider="gemini",
                     )
-                usage_stats_store.record_message(
-                    account_id=account.id,
+                except ProxySelectionError as exc:
+                    return _gemini_error_response(
+                        exc.status_code,
+                        exc.message,
+                        error_status="UNAVAILABLE",
+                    )
+
+                retry_body = build_accio_request_from_gemini(
+                    payload,
                     model=normalized_model_name,
-                    input_tokens=int(usage.get("input_tokens") or 0),
-                    output_tokens=int(usage.get("output_tokens") or 0),
-                    success=True,
-                    stop_reason=str(summary.get("stop_reason") or "STOP"),
+                    token=retry_account.access_token,
+                    utdid=retry_account.utdid,
+                    version=settings.version,
                 )
-                api_log_store.record(
-                    {
-                        "level": "warn" if empty_response else "info",
-                        "event": "gemini_generate_content",
-                        "success": True,
-                        "emptyResponse": empty_response,
-                        "accountId": account.id,
-                        "accountName": account.name,
-                        "fillPriority": account.fill_priority,
-                        "model": normalized_model_name,
-                        "stream": True,
-                        "strategy": panel_settings.api_account_strategy,
-                        "requestId": request_id,
-                        "message": (
-                            f"空回复，已禁用模型 {normalized_model_name}"
-                            if empty_response
-                            else "Gemini 流式兼容调用完成"
-                        ),
-                        "statusCode": 200,
-                        "stopReason": str(summary.get("stop_reason") or "STOP"),
-                        "inputTokens": int(usage.get("input_tokens") or 0),
-                        "outputTokens": int(usage.get("output_tokens") or 0),
-                        "remainingQuota": quota.get("remaining_value"),
-                        "usedQuota": quota.get("used_value"),
-                        "messagesCount": messages_count,
-                        "imageBlocks": int(summary.get("image_blocks") or 0),
-                        "textChars": int(summary.get("text_chars") or 0),
-                        "toolUseBlocks": int(summary.get("tool_use_blocks") or 0),
-                        "durationMs": int((time.perf_counter() - started_at) * 1000),
-                    }
+                retry_request_id = str(retry_body.get("request_id") or "")
+                try:
+                    retry_response = await asyncio.to_thread(
+                        client.generate_content,
+                        retry_account,
+                        retry_body,
+                        proxy_url=panel_settings.upstream_proxy_url,
+                    )
+                except requests.RequestException as exc:
+                    return _gemini_error_response(
+                        502,
+                        f"上游请求失败: {exc}",
+                        error_status="UNAVAILABLE",
+                    )
+
+                if not retry_response.ok:
+                    upstream_text = ""
+                    with contextlib.suppress(Exception):
+                        upstream_text = retry_response.text[:500]
+                    return _gemini_error_response(
+                        retry_response.status_code,
+                        upstream_text or "上游返回错误。",
+                        error_status="UNAVAILABLE",
+                    )
+
+                stream_account = retry_account
+                stream_quota = retry_quota
+                stream_bytes, _ = _build_stream_attempt(
+                    stream_account,
+                    stream_quota,
+                    retry_response,
+                    retry_request_id,
                 )
 
-            stream_bytes = iter_gemini_generate_content_sse_bytes(
-                upstream_response,
-                normalized_model_name,
-                on_complete=on_gemini_stream_complete,
-            )
             return StreamingResponse(
                 stream_bytes,
                 media_type="text/event-stream",
-                headers=response_headers,
+                headers=_stream_headers(stream_account, stream_quota),
             )
 
         try:
@@ -1632,6 +1826,113 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 normalized_model_name,
                 provider="gemini",
             )
+            finish_reason = extract_gemini_finish_reason(response_payload)
+            usage_stats_store.record_message(
+                account_id=account.id,
+                model=normalized_model_name,
+                input_tokens=int(usage["input_tokens"]),
+                output_tokens=int(usage["output_tokens"]),
+                success=True,
+                stop_reason=finish_reason,
+            )
+            api_log_store.record(
+                {
+                    "level": "warn",
+                    "event": "gemini_generate_content",
+                    "success": True,
+                    "emptyResponse": True,
+                    "accountId": account.id,
+                    "accountName": account.name,
+                    "fillPriority": account.fill_priority,
+                    "model": normalized_model_name,
+                    "stream": False,
+                    "strategy": panel_settings.api_account_strategy,
+                    "requestId": request_id,
+                    "message": f"空回复，已禁用模型 {normalized_model_name}",
+                    "statusCode": 200,
+                    "stopReason": finish_reason,
+                    "inputTokens": int(usage["input_tokens"]),
+                    "outputTokens": int(usage["output_tokens"]),
+                    "remainingQuota": quota.get("remaining_value"),
+                    "usedQuota": quota.get("used_value"),
+                    "messagesCount": messages_count,
+                    "textChars": int(output_summary["text_chars"]),
+                    "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                    "imageBlocks": int(output_summary["image_blocks"]),
+                    "durationMs": int((time.perf_counter() - started_at) * 1000),
+                }
+            )
+            try:
+                retry_account, retry_quota = await asyncio.to_thread(
+                    _select_proxy_account,
+                    application,
+                    panel_settings,
+                    normalized_model_name,
+                    provider="gemini",
+                )
+            except ProxySelectionError as exc:
+                return _gemini_error_response(
+                    exc.status_code,
+                    exc.message,
+                    error_status="UNAVAILABLE",
+                )
+
+            retry_body = build_accio_request_from_gemini(
+                payload,
+                model=normalized_model_name,
+                token=retry_account.access_token,
+                utdid=retry_account.utdid,
+                version=settings.version,
+            )
+            retry_request_id = str(retry_body.get("request_id") or "")
+            try:
+                retry_response = await asyncio.to_thread(
+                    client.generate_content,
+                    retry_account,
+                    retry_body,
+                    proxy_url=panel_settings.upstream_proxy_url,
+                )
+            except requests.RequestException as exc:
+                return _gemini_error_response(
+                    502,
+                    f"上游请求失败: {exc}",
+                    error_status="UNAVAILABLE",
+                )
+
+            if not retry_response.ok:
+                upstream_text = ""
+                with contextlib.suppress(Exception):
+                    upstream_text = retry_response.text[:500]
+                return _gemini_error_response(
+                    retry_response.status_code,
+                    upstream_text or "上游返回错误。",
+                    error_status="UNAVAILABLE",
+                )
+
+            account = retry_account
+            quota = retry_quota
+            request_id = retry_request_id
+            try:
+                response_payload = await asyncio.to_thread(
+                    decode_gemini_generate_content_response,
+                    retry_response,
+                    normalized_model_name,
+                )
+            except ValueError as exc:
+                return _gemini_error_response(
+                    502,
+                    str(exc),
+                    error_status="UNAVAILABLE",
+                )
+            usage = extract_gemini_usage(response_payload)
+            output_summary = summarize_gemini_response(response_payload)
+            if output_summary["empty_response"]:
+                _disable_account_model_on_empty_response(
+                    store,
+                    account,
+                    normalized_model_name,
+                    provider="gemini",
+                )
         finish_reason = extract_gemini_finish_reason(response_payload)
         usage_stats_store.record_message(
             account_id=account.id,
@@ -2264,27 +2565,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 code="upstream_request_failed",
             )
 
-        response_headers = {
-            "x-accio-account-id": account.id,
-            "x-accio-account-strategy": panel_settings.api_account_strategy,
-        }
-        if quota.get("success"):
-            response_headers["x-accio-account-remaining"] = str(
-                quota["remaining_value"]
-            )
-        accio_response_meta = {
-            "account_id": account.id,
-            "account_name": account.name,
-            "fill_priority": account.fill_priority,
-            "strategy": panel_settings.api_account_strategy,
-            "remaining_quota": quota.get("remaining_value"),
-            "used_quota": quota.get("used_value"),
-            "request_id": request_id,
-            "session_id": chat_payload.get("session_id"),
-            "conversation_id": chat_payload.get("conversation_id"),
-            "previous_response_id": chat_payload.get("previous_response_id"),
-        }
-
         if not upstream_response.ok:
             try:
                 upstream_text = upstream_response.text[:500]
@@ -2331,66 +2611,187 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         if requested_stream:
+            def _stream_headers(
+                selected_account: Account,
+                selected_quota: dict[str, Any],
+            ) -> dict[str, str]:
+                headers = {
+                    "x-accio-account-id": selected_account.id,
+                    "x-accio-account-strategy": panel_settings.api_account_strategy,
+                }
+                if selected_quota.get("success"):
+                    headers["x-accio-account-remaining"] = str(
+                        selected_quota["remaining_value"]
+                    )
+                return headers
 
-            def on_openai_responses_complete(summary: dict[str, Any]) -> None:
-                usage = summary.get("usage") if isinstance(summary.get("usage"), dict) else {}
-                empty_response = _is_stream_summary_empty(summary)
-                if empty_response:
-                    _disable_account_model_on_empty_response(
-                        store,
-                        account,
+            def _response_meta(
+                selected_account: Account,
+                selected_quota: dict[str, Any],
+                selected_request_id: str,
+            ) -> dict[str, Any]:
+                return {
+                    "account_id": selected_account.id,
+                    "account_name": selected_account.name,
+                    "fill_priority": selected_account.fill_priority,
+                    "strategy": panel_settings.api_account_strategy,
+                    "remaining_quota": selected_quota.get("remaining_value"),
+                    "used_quota": selected_quota.get("used_value"),
+                    "request_id": selected_request_id,
+                    "session_id": chat_payload.get("session_id"),
+                    "conversation_id": chat_payload.get("conversation_id"),
+                    "previous_response_id": chat_payload.get("previous_response_id"),
+                }
+
+            def _build_stream_attempt(
+                selected_account: Account,
+                selected_quota: dict[str, Any],
+                selected_response: requests.Response,
+                selected_request_id: str,
+            ) -> tuple[Iterator[bytes], bool]:
+                def on_openai_responses_complete(summary: dict[str, Any]) -> None:
+                    usage = summary.get("usage") if isinstance(summary.get("usage"), dict) else {}
+                    empty_response = _is_stream_summary_empty(summary)
+                    if empty_response:
+                        _disable_account_model_on_empty_response(
+                            store,
+                            selected_account,
+                            model,
+                        )
+                    usage_stats_store.record_message(
+                        account_id=selected_account.id,
+                        model=model,
+                        input_tokens=int(usage.get("input_tokens") or 0),
+                        output_tokens=int(usage.get("output_tokens") or 0),
+                        success=True,
+                        stop_reason=str(summary.get("stop_reason") or "end_turn"),
+                    )
+                    api_log_store.record(
+                        {
+                            "level": "warn" if empty_response else "info",
+                            "event": "v1_responses",
+                            "success": True,
+                            "emptyResponse": empty_response,
+                            "accountId": selected_account.id,
+                            "accountName": selected_account.name,
+                            "fillPriority": selected_account.fill_priority,
+                            "model": model,
+                            "stream": True,
+                            "strategy": panel_settings.api_account_strategy,
+                            "requestId": selected_request_id,
+                            "message": (
+                                f"空回复，已禁用模型 {model}"
+                                if empty_response
+                                else "Responses 流式调用完成"
+                            ),
+                            "statusCode": 200,
+                            "stopReason": str(summary.get("stop_reason") or "end_turn"),
+                            "inputTokens": int(usage.get("input_tokens") or 0),
+                            "outputTokens": int(usage.get("output_tokens") or 0),
+                            "remainingQuota": selected_quota.get("remaining_value"),
+                            "usedQuota": selected_quota.get("used_value"),
+                            "messagesCount": messages_count,
+                            "maxTokens": max_tokens,
+                            "textChars": int(summary.get("text_chars") or 0),
+                            "toolUseBlocks": int(summary.get("tool_use_blocks") or 0),
+                            "durationMs": int((time.perf_counter() - started_at) * 1000),
+                        }
+                    )
+
+                stream_bytes = iter_openai_responses_sse_bytes(
+                    selected_response,
+                    model,
+                    accio=_response_meta(
+                        selected_account,
+                        selected_quota,
+                        selected_request_id,
+                    ),
+                    on_complete=on_openai_responses_complete,
+                )
+                prefetched_chunks, remaining_chunks, has_meaningful_output = (
+                    _prefetch_stream_until_meaningful(
+                        stream_bytes,
+                        chunk_has_meaningful_output=_openai_responses_chunk_has_meaningful_output,
+                    )
+                )
+                return (
+                    itertools.chain(prefetched_chunks, remaining_chunks),
+                    has_meaningful_output,
+                )
+
+            stream_account = account
+            stream_quota = quota
+            stream_request_id = request_id
+            stream_bytes, has_meaningful_output = _build_stream_attempt(
+                stream_account,
+                stream_quota,
+                upstream_response,
+                stream_request_id,
+            )
+            if not has_meaningful_output:
+                try:
+                    retry_account, retry_quota = await asyncio.to_thread(
+                        _select_proxy_account,
+                        application,
+                        panel_settings,
                         model,
                     )
-                usage_stats_store.record_message(
-                    account_id=account.id,
-                    model=model,
-                    input_tokens=int(usage.get("input_tokens") or 0),
-                    output_tokens=int(usage.get("output_tokens") or 0),
-                    success=True,
-                    stop_reason=str(summary.get("stop_reason") or "end_turn"),
+                except ProxySelectionError as exc:
+                    return _openai_error_response(
+                        exc.status_code,
+                        exc.message,
+                        error_type="server_error",
+                        code="proxy_selection_failed",
+                    )
+
+                retry_body = build_accio_request_from_openai(
+                    chat_payload,
+                    token=retry_account.access_token,
+                    utdid=retry_account.utdid,
+                    version=settings.version,
                 )
-                api_log_store.record(
-                    {
-                        "level": "warn" if empty_response else "info",
-                        "event": "v1_responses",
-                        "success": True,
-                        "emptyResponse": empty_response,
-                        "accountId": account.id,
-                        "accountName": account.name,
-                        "fillPriority": account.fill_priority,
-                        "model": model,
-                        "stream": True,
-                        "strategy": panel_settings.api_account_strategy,
-                        "requestId": request_id,
-                        "message": (
-                            f"空回复，已禁用模型 {model}"
-                            if empty_response
-                            else "Responses 流式调用完成"
-                        ),
-                        "statusCode": 200,
-                        "stopReason": str(summary.get("stop_reason") or "end_turn"),
-                        "inputTokens": int(usage.get("input_tokens") or 0),
-                        "outputTokens": int(usage.get("output_tokens") or 0),
-                        "remainingQuota": quota.get("remaining_value"),
-                        "usedQuota": quota.get("used_value"),
-                        "messagesCount": messages_count,
-                        "maxTokens": max_tokens,
-                        "textChars": int(summary.get("text_chars") or 0),
-                        "toolUseBlocks": int(summary.get("tool_use_blocks") or 0),
-                        "durationMs": int((time.perf_counter() - started_at) * 1000),
-                    }
+                retry_request_id = str(retry_body.get("request_id") or "")
+                try:
+                    retry_response = await asyncio.to_thread(
+                        client.generate_content,
+                        retry_account,
+                        retry_body,
+                        proxy_url=panel_settings.upstream_proxy_url,
+                    )
+                except requests.RequestException as exc:
+                    return _openai_error_response(
+                        502,
+                        f"上游请求失败: {exc}",
+                        error_type="server_error",
+                        code="upstream_request_failed",
+                    )
+
+                if not retry_response.ok:
+                    try:
+                        upstream_text = retry_response.text[:500]
+                    finally:
+                        retry_response.close()
+                    return _openai_error_response(
+                        retry_response.status_code,
+                        upstream_text or "上游返回错误。",
+                        error_type="server_error",
+                        code="upstream_error",
+                    )
+
+                stream_account = retry_account
+                stream_quota = retry_quota
+                stream_request_id = retry_request_id
+                stream_bytes, _ = _build_stream_attempt(
+                    stream_account,
+                    stream_quota,
+                    retry_response,
+                    stream_request_id,
                 )
 
-            stream_bytes = iter_openai_responses_sse_bytes(
-                upstream_response,
-                model,
-                accio=accio_response_meta,
-                on_complete=on_openai_responses_complete,
-            )
             return StreamingResponse(
                 stream_bytes,
                 media_type="text/event-stream",
-                headers=response_headers,
+                headers=_stream_headers(stream_account, stream_quota),
             )
 
         response_payload = await asyncio.to_thread(
@@ -2408,6 +2809,133 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 account,
                 model,
             )
+            usage_stats_store.record_message(
+                account_id=account.id,
+                model=model,
+                input_tokens=int(usage.get("input_tokens") or 0),
+                output_tokens=int(usage.get("output_tokens") or 0),
+                success=True,
+                stop_reason=str(response_payload.get("stop_reason") or "end_turn"),
+            )
+            api_log_store.record(
+                {
+                    "level": "warn",
+                    "event": "v1_responses",
+                    "success": True,
+                    "emptyResponse": True,
+                    "accountId": account.id,
+                    "accountName": account.name,
+                    "fillPriority": account.fill_priority,
+                    "model": model,
+                    "stream": False,
+                    "strategy": panel_settings.api_account_strategy,
+                    "requestId": request_id,
+                    "message": f"空回复，已禁用模型 {model}",
+                    "statusCode": 200,
+                    "stopReason": str(response_payload.get("stop_reason") or "end_turn"),
+                    "inputTokens": int(usage.get("input_tokens") or 0),
+                    "outputTokens": int(usage.get("output_tokens") or 0),
+                    "remainingQuota": quota.get("remaining_value"),
+                    "usedQuota": quota.get("used_value"),
+                    "messagesCount": messages_count,
+                    "maxTokens": max_tokens,
+                    "textChars": int(output_summary["text_chars"]),
+                    "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                    "durationMs": int((time.perf_counter() - started_at) * 1000),
+                }
+            )
+            try:
+                retry_account, retry_quota = await asyncio.to_thread(
+                    _select_proxy_account,
+                    application,
+                    panel_settings,
+                    model,
+                )
+            except ProxySelectionError as exc:
+                return _openai_error_response(
+                    exc.status_code,
+                    exc.message,
+                    error_type="server_error",
+                    code="proxy_selection_failed",
+                )
+
+            retry_body = build_accio_request_from_openai(
+                chat_payload,
+                token=retry_account.access_token,
+                utdid=retry_account.utdid,
+                version=settings.version,
+            )
+            retry_request_id = str(retry_body.get("request_id") or "")
+            try:
+                retry_response = await asyncio.to_thread(
+                    client.generate_content,
+                    retry_account,
+                    retry_body,
+                    proxy_url=panel_settings.upstream_proxy_url,
+                )
+            except requests.RequestException as exc:
+                return _openai_error_response(
+                    502,
+                    f"上游请求失败: {exc}",
+                    error_type="server_error",
+                    code="upstream_request_failed",
+                )
+
+            if not retry_response.ok:
+                try:
+                    upstream_text = retry_response.text[:500]
+                finally:
+                    retry_response.close()
+                return _openai_error_response(
+                    retry_response.status_code,
+                    upstream_text or "上游返回错误。",
+                    error_type="server_error",
+                    code="upstream_error",
+                )
+
+            account = retry_account
+            quota = retry_quota
+            request_id = retry_request_id
+            response_payload = await asyncio.to_thread(
+                decode_non_stream_response,
+                retry_response,
+                model,
+            )
+            usage = (
+                response_payload.get("usage")
+                if isinstance(response_payload, dict)
+                else {}
+            )
+            if not isinstance(usage, dict):
+                usage = {}
+            output_summary = _summarize_non_stream_payload(response_payload)
+            if output_summary["empty_response"]:
+                _disable_account_model_on_empty_response(
+                    store,
+                    account,
+                    model,
+                )
+
+        response_headers = {
+            "x-accio-account-id": account.id,
+            "x-accio-account-strategy": panel_settings.api_account_strategy,
+        }
+        if quota.get("success"):
+            response_headers["x-accio-account-remaining"] = str(
+                quota["remaining_value"]
+            )
+        accio_response_meta = {
+            "account_id": account.id,
+            "account_name": account.name,
+            "fill_priority": account.fill_priority,
+            "strategy": panel_settings.api_account_strategy,
+            "remaining_quota": quota.get("remaining_value"),
+            "used_quota": quota.get("used_value"),
+            "request_id": request_id,
+            "session_id": chat_payload.get("session_id"),
+            "conversation_id": chat_payload.get("conversation_id"),
+            "previous_response_id": chat_payload.get("previous_response_id"),
+        }
         usage_stats_store.record_message(
             account_id=account.id,
             model=model,
@@ -2601,29 +3129,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 code="upstream_request_failed",
             )
 
-        response_headers = {
-            "x-accio-account-id": account.id,
-            "x-accio-account-strategy": panel_settings.api_account_strategy,
-        }
-        if quota.get("success"):
-            response_headers["x-accio-account-remaining"] = str(
-                quota["remaining_value"]
-            )
-        accio_chat_meta = {
-            "account_id": account.id,
-            "account_name": account.name,
-            "fill_priority": account.fill_priority,
-            "strategy": panel_settings.api_account_strategy,
-            "remaining_quota": quota.get("remaining_value"),
-            "used_quota": quota.get("used_value"),
-            "request_id": request_id,
-            "session_id": payload.get("session_id", payload.get("sessionId")),
-            "conversation_id": payload.get(
-                "conversation_id",
-                payload.get("conversationId"),
-            ),
-        }
-
         if not upstream_response.ok:
             try:
                 upstream_text = upstream_response.text[:500]
@@ -2670,65 +3175,164 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         if requested_stream:
+            def _stream_headers(
+                selected_account: Account,
+                selected_quota: dict[str, Any],
+            ) -> dict[str, str]:
+                headers = {
+                    "x-accio-account-id": selected_account.id,
+                    "x-accio-account-strategy": panel_settings.api_account_strategy,
+                }
+                if selected_quota.get("success"):
+                    headers["x-accio-account-remaining"] = str(
+                        selected_quota["remaining_value"]
+                    )
+                return headers
 
-            def on_openai_stream_complete(summary: dict[str, Any]) -> None:
-                usage = summary.get("usage") if isinstance(summary.get("usage"), dict) else {}
-                empty_response = _is_stream_summary_empty(summary)
-                if empty_response:
-                    _disable_account_model_on_empty_response(
-                        store,
-                        account,
+            def _build_stream_attempt(
+                selected_account: Account,
+                selected_quota: dict[str, Any],
+                selected_response: requests.Response,
+                selected_request_id: str,
+            ) -> tuple[Iterator[bytes], bool]:
+                def on_openai_stream_complete(summary: dict[str, Any]) -> None:
+                    usage = summary.get("usage") if isinstance(summary.get("usage"), dict) else {}
+                    empty_response = _is_stream_summary_empty(summary)
+                    if empty_response:
+                        _disable_account_model_on_empty_response(
+                            store,
+                            selected_account,
+                            model,
+                        )
+                    usage_stats_store.record_message(
+                        account_id=selected_account.id,
+                        model=model,
+                        input_tokens=int(usage.get("input_tokens") or 0),
+                        output_tokens=int(usage.get("output_tokens") or 0),
+                        success=True,
+                        stop_reason=str(summary.get("stop_reason") or "end_turn"),
+                    )
+                    api_log_store.record(
+                        {
+                            "level": "warn" if empty_response else "info",
+                            "event": "v1_chat_completions",
+                            "success": True,
+                            "emptyResponse": empty_response,
+                            "accountId": selected_account.id,
+                            "accountName": selected_account.name,
+                            "fillPriority": selected_account.fill_priority,
+                            "model": model,
+                            "stream": True,
+                            "strategy": panel_settings.api_account_strategy,
+                            "requestId": selected_request_id,
+                            "message": (
+                                f"空回复，已禁用模型 {model}"
+                                if empty_response
+                                else "OpenAI 流式调用完成"
+                            ),
+                            "statusCode": 200,
+                            "stopReason": str(summary.get("stop_reason") or "end_turn"),
+                            "inputTokens": int(usage.get("input_tokens") or 0),
+                            "outputTokens": int(usage.get("output_tokens") or 0),
+                            "remainingQuota": selected_quota.get("remaining_value"),
+                            "usedQuota": selected_quota.get("used_value"),
+                            "messagesCount": messages_count,
+                            "maxTokens": max_tokens,
+                            "textChars": int(summary.get("text_chars") or 0),
+                            "toolUseBlocks": int(summary.get("tool_use_blocks") or 0),
+                            "durationMs": int((time.perf_counter() - started_at) * 1000),
+                        }
+                    )
+
+                stream_bytes = iter_openai_chat_sse_bytes(
+                    selected_response,
+                    model,
+                    on_complete=on_openai_stream_complete,
+                )
+                prefetched_chunks, remaining_chunks, has_meaningful_output = (
+                    _prefetch_stream_until_meaningful(
+                        stream_bytes,
+                        chunk_has_meaningful_output=_openai_chat_chunk_has_meaningful_output,
+                    )
+                )
+                return (
+                    itertools.chain(prefetched_chunks, remaining_chunks),
+                    has_meaningful_output,
+                )
+
+            stream_account = account
+            stream_quota = quota
+            stream_request_id = request_id
+            stream_bytes, has_meaningful_output = _build_stream_attempt(
+                stream_account,
+                stream_quota,
+                upstream_response,
+                stream_request_id,
+            )
+            if not has_meaningful_output:
+                try:
+                    retry_account, retry_quota = await asyncio.to_thread(
+                        _select_proxy_account,
+                        application,
+                        panel_settings,
                         model,
                     )
-                usage_stats_store.record_message(
-                    account_id=account.id,
-                    model=model,
-                    input_tokens=int(usage.get("input_tokens") or 0),
-                    output_tokens=int(usage.get("output_tokens") or 0),
-                    success=True,
-                    stop_reason=str(summary.get("stop_reason") or "end_turn"),
+                except ProxySelectionError as exc:
+                    return _openai_error_response(
+                        exc.status_code,
+                        exc.message,
+                        error_type="server_error",
+                        code="proxy_selection_failed",
+                    )
+
+                retry_body = build_accio_request_from_openai(
+                    payload,
+                    token=retry_account.access_token,
+                    utdid=retry_account.utdid,
+                    version=settings.version,
                 )
-                api_log_store.record(
-                    {
-                        "level": "warn" if empty_response else "info",
-                        "event": "v1_chat_completions",
-                        "success": True,
-                        "emptyResponse": empty_response,
-                        "accountId": account.id,
-                        "accountName": account.name,
-                        "fillPriority": account.fill_priority,
-                        "model": model,
-                        "stream": True,
-                        "strategy": panel_settings.api_account_strategy,
-                        "requestId": request_id,
-                        "message": (
-                            f"空回复，已禁用模型 {model}"
-                            if empty_response
-                            else "OpenAI 流式调用完成"
-                        ),
-                        "statusCode": 200,
-                        "stopReason": str(summary.get("stop_reason") or "end_turn"),
-                        "inputTokens": int(usage.get("input_tokens") or 0),
-                        "outputTokens": int(usage.get("output_tokens") or 0),
-                        "remainingQuota": quota.get("remaining_value"),
-                        "usedQuota": quota.get("used_value"),
-                        "messagesCount": messages_count,
-                        "maxTokens": max_tokens,
-                        "textChars": int(summary.get("text_chars") or 0),
-                        "toolUseBlocks": int(summary.get("tool_use_blocks") or 0),
-                        "durationMs": int((time.perf_counter() - started_at) * 1000),
-                    }
+                retry_request_id = str(retry_body.get("request_id") or "")
+                try:
+                    retry_response = await asyncio.to_thread(
+                        client.generate_content,
+                        retry_account,
+                        retry_body,
+                        proxy_url=panel_settings.upstream_proxy_url,
+                    )
+                except requests.RequestException as exc:
+                    return _openai_error_response(
+                        502,
+                        f"上游请求失败: {exc}",
+                        error_type="server_error",
+                        code="upstream_request_failed",
+                    )
+
+                if not retry_response.ok:
+                    try:
+                        upstream_text = retry_response.text[:500]
+                    finally:
+                        retry_response.close()
+                    return _openai_error_response(
+                        retry_response.status_code,
+                        upstream_text or "上游返回错误。",
+                        error_type="server_error",
+                        code="upstream_error",
+                    )
+
+                stream_account = retry_account
+                stream_quota = retry_quota
+                stream_request_id = retry_request_id
+                stream_bytes, _ = _build_stream_attempt(
+                    stream_account,
+                    stream_quota,
+                    retry_response,
+                    stream_request_id,
                 )
 
-            stream_bytes = iter_openai_chat_sse_bytes(
-                upstream_response,
-                model,
-                on_complete=on_openai_stream_complete,
-            )
             return StreamingResponse(
                 stream_bytes,
                 media_type="text/event-stream",
-                headers=response_headers,
+                headers=_stream_headers(stream_account, stream_quota),
             )
 
         response_payload = await asyncio.to_thread(
@@ -2746,6 +3350,135 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 account,
                 model,
             )
+            usage_stats_store.record_message(
+                account_id=account.id,
+                model=model,
+                input_tokens=int(usage.get("input_tokens") or 0),
+                output_tokens=int(usage.get("output_tokens") or 0),
+                success=True,
+                stop_reason=str(response_payload.get("stop_reason") or "end_turn"),
+            )
+            api_log_store.record(
+                {
+                    "level": "warn",
+                    "event": "v1_chat_completions",
+                    "success": True,
+                    "emptyResponse": True,
+                    "accountId": account.id,
+                    "accountName": account.name,
+                    "fillPriority": account.fill_priority,
+                    "model": model,
+                    "stream": False,
+                    "strategy": panel_settings.api_account_strategy,
+                    "requestId": request_id,
+                    "message": f"空回复，已禁用模型 {model}",
+                    "statusCode": 200,
+                    "stopReason": str(response_payload.get("stop_reason") or "end_turn"),
+                    "inputTokens": int(usage.get("input_tokens") or 0),
+                    "outputTokens": int(usage.get("output_tokens") or 0),
+                    "remainingQuota": quota.get("remaining_value"),
+                    "usedQuota": quota.get("used_value"),
+                    "messagesCount": messages_count,
+                    "maxTokens": max_tokens,
+                    "textChars": int(output_summary["text_chars"]),
+                    "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                    "durationMs": int((time.perf_counter() - started_at) * 1000),
+                }
+            )
+            try:
+                retry_account, retry_quota = await asyncio.to_thread(
+                    _select_proxy_account,
+                    application,
+                    panel_settings,
+                    model,
+                )
+            except ProxySelectionError as exc:
+                return _openai_error_response(
+                    exc.status_code,
+                    exc.message,
+                    error_type="server_error",
+                    code="proxy_selection_failed",
+                )
+
+            retry_body = build_accio_request_from_openai(
+                payload,
+                token=retry_account.access_token,
+                utdid=retry_account.utdid,
+                version=settings.version,
+            )
+            retry_request_id = str(retry_body.get("request_id") or "")
+            try:
+                retry_response = await asyncio.to_thread(
+                    client.generate_content,
+                    retry_account,
+                    retry_body,
+                    proxy_url=panel_settings.upstream_proxy_url,
+                )
+            except requests.RequestException as exc:
+                return _openai_error_response(
+                    502,
+                    f"上游请求失败: {exc}",
+                    error_type="server_error",
+                    code="upstream_request_failed",
+                )
+
+            if not retry_response.ok:
+                try:
+                    upstream_text = retry_response.text[:500]
+                finally:
+                    retry_response.close()
+                return _openai_error_response(
+                    retry_response.status_code,
+                    upstream_text or "上游返回错误。",
+                    error_type="server_error",
+                    code="upstream_error",
+                )
+
+            account = retry_account
+            quota = retry_quota
+            request_id = retry_request_id
+            response_payload = await asyncio.to_thread(
+                decode_non_stream_response,
+                retry_response,
+                model,
+            )
+            usage = (
+                response_payload.get("usage")
+                if isinstance(response_payload, dict)
+                else {}
+            )
+            if not isinstance(usage, dict):
+                usage = {}
+            output_summary = _summarize_non_stream_payload(response_payload)
+            if output_summary["empty_response"]:
+                _disable_account_model_on_empty_response(
+                    store,
+                    account,
+                    model,
+                )
+
+        response_headers = {
+            "x-accio-account-id": account.id,
+            "x-accio-account-strategy": panel_settings.api_account_strategy,
+        }
+        if quota.get("success"):
+            response_headers["x-accio-account-remaining"] = str(
+                quota["remaining_value"]
+            )
+        accio_chat_meta = {
+            "account_id": account.id,
+            "account_name": account.name,
+            "fill_priority": account.fill_priority,
+            "strategy": panel_settings.api_account_strategy,
+            "remaining_quota": quota.get("remaining_value"),
+            "used_quota": quota.get("used_value"),
+            "request_id": request_id,
+            "session_id": payload.get("session_id", payload.get("sessionId")),
+            "conversation_id": payload.get(
+                "conversation_id",
+                payload.get("conversationId"),
+            ),
+        }
         usage_stats_store.record_message(
             account_id=account.id,
             model=model,
@@ -2934,15 +3667,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             return _anthropic_error_response(502, f"上游请求失败: {exc}")
 
-        response_headers = {
-            "x-accio-account-id": account.id,
-            "x-accio-account-strategy": panel_settings.api_account_strategy,
-        }
-        if quota.get("success"):
-            response_headers["x-accio-account-remaining"] = str(
-                quota["remaining_value"]
-            )
-
         if not upstream_response.ok:
             try:
                 upstream_text = upstream_response.text[:500]
@@ -2987,70 +3711,157 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         if requested_stream:
-            def record_stream_summary(summary: dict[str, Any]) -> None:
-                usage = summary.get("usage") if isinstance(summary, dict) else {}
-                if not isinstance(usage, dict):
-                    usage = {}
-                empty_response = _is_stream_summary_empty(summary)
-                if empty_response:
-                    _disable_account_model_on_empty_response(
-                        store,
-                        account,
+            def _stream_headers(
+                selected_account: Account,
+                selected_quota: dict[str, Any],
+            ) -> dict[str, str]:
+                headers = {
+                    "x-accio-account-id": selected_account.id,
+                    "x-accio-account-strategy": panel_settings.api_account_strategy,
+                }
+                if selected_quota.get("success"):
+                    headers["x-accio-account-remaining"] = str(
+                        selected_quota["remaining_value"]
+                    )
+                return headers
+
+            def _build_stream_attempt(
+                selected_account: Account,
+                selected_quota: dict[str, Any],
+                selected_response: requests.Response,
+                selected_request_id: str,
+            ) -> tuple[Iterator[bytes], bool]:
+                def record_stream_summary(summary: dict[str, Any]) -> None:
+                    usage = summary.get("usage") if isinstance(summary, dict) else {}
+                    if not isinstance(usage, dict):
+                        usage = {}
+                    empty_response = _is_stream_summary_empty(summary)
+                    if empty_response:
+                        _disable_account_model_on_empty_response(
+                            store,
+                            selected_account,
+                            model,
+                        )
+                    usage_stats_store.record_message(
+                        account_id=selected_account.id,
+                        model=model,
+                        input_tokens=int(usage.get("input_tokens") or 0),
+                        output_tokens=int(usage.get("output_tokens") or 0),
+                        cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+                        cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
+                        success=True,
+                        stop_reason=str(summary.get("stop_reason") or "end_turn"),
+                    )
+                    api_log_store.record(
+                        {
+                            "level": "warn" if empty_response else "info",
+                            "event": "v1_messages",
+                            "success": True,
+                            "emptyResponse": empty_response,
+                            "accountId": selected_account.id,
+                            "accountName": selected_account.name,
+                            "fillPriority": selected_account.fill_priority,
+                            "model": model,
+                            "stream": True,
+                            "strategy": panel_settings.api_account_strategy,
+                            "requestId": selected_request_id,
+                            "message": (
+                                f"空回复，已禁用模型 {model}"
+                                if empty_response
+                                else "流式调用完成"
+                            ),
+                            "statusCode": 200,
+                            "stopReason": str(summary.get("stop_reason") or "end_turn"),
+                            "inputTokens": int(usage.get("input_tokens") or 0),
+                            "outputTokens": int(usage.get("output_tokens") or 0),
+                            "cacheCreationInputTokens": int(usage.get("cache_creation_input_tokens") or 0),
+                            "cacheReadInputTokens": int(usage.get("cache_read_input_tokens") or 0),
+                            "remainingQuota": selected_quota.get("remaining_value"),
+                            "usedQuota": selected_quota.get("used_value"),
+                            "messagesCount": messages_count,
+                            "maxTokens": max_tokens,
+                            "textChars": int(summary.get("text_chars") or 0),
+                            "thinkingChars": int(summary.get("thinking_chars") or 0),
+                            "toolUseBlocks": int(summary.get("tool_use_blocks") or 0),
+                            "durationMs": int((time.perf_counter() - started_at) * 1000),
+                        }
+                    )
+
+                stream_bytes = iter_anthropic_sse_bytes(
+                    selected_response,
+                    model,
+                    on_complete=record_stream_summary,
+                )
+                prefetched_chunks, remaining_chunks, has_meaningful_output = (
+                    _prefetch_stream_until_meaningful(
+                        stream_bytes,
+                        chunk_has_meaningful_output=_anthropic_stream_chunk_has_meaningful_output,
+                    )
+                )
+                return (
+                    itertools.chain(prefetched_chunks, remaining_chunks),
+                    has_meaningful_output,
+                )
+
+            stream_account = account
+            stream_quota = quota
+            stream_bytes, has_meaningful_output = _build_stream_attempt(
+                stream_account,
+                stream_quota,
+                upstream_response,
+                request_id,
+            )
+            if not has_meaningful_output:
+                try:
+                    retry_account, retry_quota = await asyncio.to_thread(
+                        _select_proxy_account,
+                        application,
+                        panel_settings,
                         model,
                     )
-                usage_stats_store.record_message(
-                    account_id=account.id,
-                    model=model,
-                    input_tokens=int(usage.get("input_tokens") or 0),
-                    output_tokens=int(usage.get("output_tokens") or 0),
-                    cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
-                    cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
-                    success=True,
-                    stop_reason=str(summary.get("stop_reason") or "end_turn"),
+                except ProxySelectionError as exc:
+                    return _anthropic_error_response(exc.status_code, exc.message)
+
+                retry_body = build_accio_request(
+                    payload,
+                    token=retry_account.access_token,
+                    utdid=retry_account.utdid,
+                    version=settings.version,
                 )
-                api_log_store.record(
-                    {
-                        "level": "warn" if empty_response else "info",
-                        "event": "v1_messages",
-                        "success": True,
-                        "emptyResponse": empty_response,
-                        "accountId": account.id,
-                        "accountName": account.name,
-                        "fillPriority": account.fill_priority,
-                        "model": model,
-                        "stream": True,
-                        "strategy": panel_settings.api_account_strategy,
-                        "requestId": request_id,
-                        "message": (
-                            f"空回复，已禁用模型 {model}"
-                            if empty_response
-                            else "流式调用完成"
-                        ),
-                        "statusCode": 200,
-                        "stopReason": str(summary.get("stop_reason") or "end_turn"),
-                        "inputTokens": int(usage.get("input_tokens") or 0),
-                        "outputTokens": int(usage.get("output_tokens") or 0),
-                        "cacheCreationInputTokens": int(usage.get("cache_creation_input_tokens") or 0),
-                        "cacheReadInputTokens": int(usage.get("cache_read_input_tokens") or 0),
-                        "remainingQuota": quota.get("remaining_value"),
-                        "usedQuota": quota.get("used_value"),
-                        "messagesCount": messages_count,
-                        "maxTokens": max_tokens,
-                        "textChars": int(summary.get("text_chars") or 0),
-                        "thinkingChars": int(summary.get("thinking_chars") or 0),
-                        "toolUseBlocks": int(summary.get("tool_use_blocks") or 0),
-                        "durationMs": int((time.perf_counter() - started_at) * 1000),
-                    }
+                retry_request_id = str(retry_body.get("request_id") or "")
+                try:
+                    retry_response = await asyncio.to_thread(
+                        client.generate_content,
+                        retry_account,
+                        retry_body,
+                        proxy_url=panel_settings.upstream_proxy_url,
+                    )
+                except requests.RequestException as exc:
+                    return _anthropic_error_response(502, f"上游请求失败: {exc}")
+
+                if not retry_response.ok:
+                    try:
+                        upstream_text = retry_response.text[:500]
+                    finally:
+                        retry_response.close()
+                    return _anthropic_error_response(
+                        retry_response.status_code,
+                        upstream_text or "上游返回错误。",
+                    )
+
+                stream_account = retry_account
+                stream_quota = retry_quota
+                stream_bytes, _ = _build_stream_attempt(
+                    stream_account,
+                    stream_quota,
+                    retry_response,
+                    retry_request_id,
                 )
 
             return StreamingResponse(
-                iter_anthropic_sse_bytes(
-                    upstream_response,
-                    model,
-                    on_complete=record_stream_summary,
-                ),
+                stream_bytes,
                 media_type="text/event-stream",
-                headers=response_headers,
+                headers=_stream_headers(stream_account, stream_quota),
             )
 
         response_payload = await asyncio.to_thread(
@@ -3067,6 +3878,113 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 store,
                 account,
                 model,
+            )
+            usage_stats_store.record_message(
+                account_id=account.id,
+                model=model,
+                input_tokens=int(usage.get("input_tokens") or 0),
+                output_tokens=int(usage.get("output_tokens") or 0),
+                cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+                cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
+                success=True,
+                stop_reason=str(response_payload.get("stop_reason") or "end_turn"),
+            )
+            api_log_store.record(
+                {
+                    "level": "warn",
+                    "event": "v1_messages",
+                    "success": True,
+                    "emptyResponse": True,
+                    "accountId": account.id,
+                    "accountName": account.name,
+                    "fillPriority": account.fill_priority,
+                    "model": model,
+                    "stream": False,
+                    "strategy": panel_settings.api_account_strategy,
+                    "requestId": request_id,
+                    "message": f"空回复，已禁用模型 {model}",
+                    "statusCode": 200,
+                    "stopReason": str(response_payload.get("stop_reason") or "end_turn"),
+                    "inputTokens": int(usage.get("input_tokens") or 0),
+                    "outputTokens": int(usage.get("output_tokens") or 0),
+                    "cacheCreationInputTokens": int(usage.get("cache_creation_input_tokens") or 0),
+                    "cacheReadInputTokens": int(usage.get("cache_read_input_tokens") or 0),
+                    "remainingQuota": quota.get("remaining_value"),
+                    "usedQuota": quota.get("used_value"),
+                    "messagesCount": messages_count,
+                    "maxTokens": max_tokens,
+                    "textChars": int(output_summary["text_chars"] or 0),
+                    "toolUseBlocks": int(output_summary["tool_use_blocks"] or 0),
+                    "durationMs": int((time.perf_counter() - started_at) * 1000),
+                }
+            )
+            try:
+                retry_account, retry_quota = await asyncio.to_thread(
+                    _select_proxy_account,
+                    application,
+                    panel_settings,
+                    model,
+                )
+            except ProxySelectionError as exc:
+                return _anthropic_error_response(exc.status_code, exc.message)
+
+            retry_body = build_accio_request(
+                payload,
+                token=retry_account.access_token,
+                utdid=retry_account.utdid,
+                version=settings.version,
+            )
+            retry_request_id = str(retry_body.get("request_id") or "")
+            try:
+                retry_response = await asyncio.to_thread(
+                    client.generate_content,
+                    retry_account,
+                    retry_body,
+                    proxy_url=panel_settings.upstream_proxy_url,
+                )
+            except requests.RequestException as exc:
+                return _anthropic_error_response(502, f"上游请求失败: {exc}")
+
+            if not retry_response.ok:
+                try:
+                    upstream_text = retry_response.text[:500]
+                finally:
+                    retry_response.close()
+                return _anthropic_error_response(
+                    retry_response.status_code,
+                    upstream_text or "上游返回错误。",
+                )
+
+            account = retry_account
+            quota = retry_quota
+            request_id = retry_request_id
+            response_payload = await asyncio.to_thread(
+                decode_non_stream_response,
+                retry_response,
+                model,
+            )
+            usage = (
+                response_payload.get("usage")
+                if isinstance(response_payload, dict)
+                else {}
+            )
+            if not isinstance(usage, dict):
+                usage = {}
+            output_summary = _summarize_non_stream_payload(response_payload)
+            if output_summary["empty_response"]:
+                _disable_account_model_on_empty_response(
+                    store,
+                    account,
+                    model,
+                )
+
+        response_headers = {
+            "x-accio-account-id": account.id,
+            "x-accio-account-strategy": panel_settings.api_account_strategy,
+        }
+        if quota.get("success"):
+            response_headers["x-accio-account-remaining"] = str(
+                quota["remaining_value"]
             )
         usage_stats_store.record_message(
             account_id=account.id,

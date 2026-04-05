@@ -1101,6 +1101,8 @@ def iter_openai_responses_sse_bytes(
         "usage": {
             "input_tokens": 0,
             "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
         },
         "stop_reason": "end_turn",
         "content_blocks": 0,
@@ -1374,6 +1376,8 @@ def iter_openai_chat_sse_bytes(
         "usage": {
             "input_tokens": 0,
             "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
         },
         "stop_reason": "end_turn",
         "content_blocks": 0,
