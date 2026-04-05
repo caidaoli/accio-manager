@@ -7,7 +7,7 @@ import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -76,7 +76,7 @@ from .openai_proxy import (
 from .persistence import create_runtime_stores
 from .store import AccountStore
 from .usage_stats import UsageStatsStore
-from .utils import format_countdown_hours, format_timestamp, mask_token
+from .utils import format_timestamp, mask_token
 
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -896,16 +896,10 @@ def _parse_billing_timestamp(value: Any) -> int | None:
     if not text:
         return None
 
-    is_utc = text.endswith("Z") or "+00:00" in text or "+0000" in text
-    normalized = (
-        text.replace("T", " ").replace("Z", "").replace("+00:00", "").replace("+0000", "")
-    )
+    normalized = text.replace("T", " ").replace("Z", "")
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
-            dt = datetime.strptime(normalized, fmt)
-            if is_utc:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return int(dt.timestamp())
+            return int(datetime.strptime(normalized, fmt).timestamp())
         except ValueError:
             continue
     return None
@@ -940,13 +934,7 @@ def _build_quota_view(result: dict[str, Any]) -> dict[str, Any]:
         if total_value > 0
         else 0
     )
-    used_ratio = 100 - remaining_ratio
-
-    next_billing_ts = _parse_billing_timestamp(entitlement.get("nextBillingDate"))
-    if next_billing_ts is not None:
-        reset_text = format_countdown_hours(next_billing_ts - int(time.time()))
-    else:
-        reset_text = "-"
+    next_billing_text = str(entitlement.get("nextBillingDate") or "").strip()
 
     if result.get("success"):
         level = "low"
@@ -956,18 +944,28 @@ def _build_quota_view(result: dict[str, Any]) -> dict[str, Any]:
             level = "medium"
         return {
             "success": True,
-            "used_value": used_ratio,
-            "used_text": f"{used_ratio}%",
-            "remaining_value": remaining_ratio,
+            "total_value": total_value,
+            "used_value": used_value,
+            "used_text": (
+                f"{used_value}/{total_value}"
+                if total_value > 0
+                else str(used_value)
+            ),
+            "remaining_value": remaining_value,
             "remaining_ratio": remaining_ratio,
-            "remaining_text": f"{remaining_ratio}%",
-            "reset_text": reset_text,
+            "remaining_text": (
+                f"{remaining_value}/{total_value}"
+                if total_value > 0
+                else str(remaining_value)
+            ),
+            "reset_text": next_billing_text or "-",
             "level": level,
             "message": _normalize_success_message(result.get("message")),
         }
 
     return {
         "success": False,
+        "total_value": 0,
         "used_value": 0,
         "used_text": "-",
         "remaining_value": 0,
