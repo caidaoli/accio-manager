@@ -28,6 +28,8 @@ class MySQLGateway:
         password: str,
         database: str,
         charset: str = "utf8mb4",
+        use_ssl: bool = False,
+        ssl_ca: str = "",
     ):
         self.host = host
         self.port = port
@@ -35,6 +37,8 @@ class MySQLGateway:
         self.password = password
         self.database = database
         self.charset = charset or "utf8mb4"
+        self.use_ssl = use_ssl
+        self.ssl_ca = ssl_ca
         self._conn = None
         self._conn_lock = threading.Lock()
 
@@ -52,16 +56,23 @@ class MySQLGateway:
                 "数据库模式需要安装 PyMySQL，请先执行 `uv sync` 安装依赖。"
             ) from exc
 
-        return pymysql.connect(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password,
-            database=self.database,
-            charset=self.charset,
-            autocommit=True,
-            cursorclass=pymysql.cursors.DictCursor,
-        )
+        kwargs: dict[str, Any] = {
+            "host": self.host,
+            "port": self.port,
+            "user": self.user,
+            "password": self.password,
+            "database": self.database,
+            "charset": self.charset,
+            "autocommit": True,
+            "cursorclass": pymysql.cursors.DictCursor,
+        }
+        if self.use_ssl:
+            if self.ssl_ca:
+                kwargs["ssl_ca"] = self.ssl_ca
+                kwargs["ssl_verify_cert"] = True
+            else:
+                kwargs["ssl"] = {"verify_mode": False}
+        return pymysql.connect(**kwargs)
 
     def _get_conn(self):
         with self._conn_lock:
@@ -429,6 +440,14 @@ def _parse_database_url(url: str) -> dict[str, Any]:
     if not host or not database or not user:
         raise ValueError("ACCIO_MYSQL 缺少 host、database 或 user")
 
+    qs = parse_qs(parsed.query)
+    _yes = ("true", "1", "yes")
+    use_ssl = (
+        qs.get("ssl", [""])[0].lower() in _yes
+        or qs.get("tls", [""])[0].lower() in _yes
+    )
+    ssl_ca = qs.get("ssl_ca", [""])[0]
+
     return {
         "host": host,
         "port": port,
@@ -436,6 +455,8 @@ def _parse_database_url(url: str) -> dict[str, Any]:
         "password": password,
         "database": database,
         "charset": charset,
+        "use_ssl": use_ssl or bool(ssl_ca),
+        "ssl_ca": ssl_ca,
     }
 
 
