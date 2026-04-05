@@ -696,6 +696,10 @@
         <a class="switch-link {% if current_view == 'settings' %}active{% endif %}" href="/dashboard?view=settings&page=1&pageSize={{ page_size }}">配置中心</a>
         <a class="switch-link {% if current_view == 'stats' %}active{% endif %}" href="/dashboard?view=stats&page=1&pageSize={{ page_size }}">统计界面</a>
         <a class="switch-link {% if current_view == 'logs' %}active{% endif %}" href="/dashboard?view=logs&page=1&pageSize={{ page_size }}">日志界面</a>
+        <a class="switch-link" href="https://github.com/caidaoli/accio-manager" target="_blank" rel="noreferrer">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right:6px;vertical-align:middle;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
       </div>
     </section>
 
@@ -714,10 +718,10 @@
     <section class="panel">
       {% if current_view == "logs" %}
       <div class="stats-section">
-        <div class="stats-section-title">最近 200 条 API 日志</div>
+        <div class="stats-section-title">API 日志（共 {{ api_logs|length }} 条）</div>
         {% if api_logs %}
         <div class="stats-table-wrap">
-          <table class="stats-table">
+          <table class="stats-table" id="logs-table">
             <thead>
               <tr>
                 <th>时间</th>
@@ -756,6 +760,10 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+        <div class="pager" id="logs-pager">
+          <div class="meta" id="logs-pager-meta"></div>
+          <div class="pager-links" id="logs-pager-links"></div>
         </div>
         {% else %}
         <div class="empty">还没有任何 Anthropic / OpenAI / Gemini 兼容调用日志。</div>
@@ -838,10 +846,10 @@
       </div>
 
       <div class="stats-section">
-        <div class="stats-section-title">按账号统计</div>
+        <div class="stats-section-title">按账号统计（共 {{ usage_stats.accounts|length }} 个账号）</div>
         {% if usage_stats.accounts %}
         <div class="stats-table-wrap">
-          <table class="stats-table">
+          <table class="stats-table" id="account-stats-table">
             <thead>
               <tr>
                 <th>账号</th>
@@ -871,6 +879,10 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+        <div class="pager" id="acct-stats-pager">
+          <div class="meta" id="acct-stats-pager-meta"></div>
+          <div class="pager-links" id="acct-stats-pager-links"></div>
         </div>
         {% else %}
         <div class="empty">还没有可展示的账号维度统计。</div>
@@ -1067,6 +1079,98 @@
   </div>
 
   <script>
+    /* ── 通用前端分页器 ── */
+    function createClientPager(config) {
+      const { tableId, pagerId, metaId, linksId, pageSize: defaultSize } = config;
+      const table = document.getElementById(tableId);
+      if (!table) return null;
+      const rows = Array.from(table.tBodies[0].rows);
+      const total = rows.length;
+      if (total === 0) {
+        const pager = document.getElementById(pagerId);
+        if (pager) pager.style.display = 'none';
+        return null;
+      }
+      let pageSize = defaultSize || 20;
+      let currentPage = 1;
+
+      function totalPages() { return Math.max(1, Math.ceil(total / pageSize)); }
+
+      function render() {
+        const tp = totalPages();
+        if (currentPage > tp) currentPage = tp;
+        const start = (currentPage - 1) * pageSize;
+        const end = start + pageSize;
+        rows.forEach((row, i) => {
+          row.style.display = (i >= start && i < end) ? '' : 'none';
+        });
+        const meta = document.getElementById(metaId);
+        if (meta) meta.textContent = '第 ' + currentPage + ' / ' + tp + ' 页，共 ' + total + ' 条';
+        renderLinks();
+      }
+
+      function renderLinks() {
+        const container = document.getElementById(linksId);
+        if (!container) return;
+        const tp = totalPages();
+        let html = '';
+        html += '<button class="page-link" onclick="' + config.varName + '.goTo(1)" ' + (currentPage <= 1 ? 'disabled' : '') + '>首页</button>';
+        html += '<button class="page-link" onclick="' + config.varName + '.prev()" ' + (currentPage <= 1 ? 'disabled' : '') + '>上一页</button>';
+        const nums = buildPageNums(currentPage, tp);
+        nums.forEach(function(n) {
+          html += '<button class="page-link' + (n === currentPage ? ' active' : '') + '" onclick="' + config.varName + '.goTo(' + n + ')">' + n + '</button>';
+        });
+        html += '<button class="page-link" onclick="' + config.varName + '.next()" ' + (currentPage >= tp ? 'disabled' : '') + '>下一页</button>';
+        html += '<button class="page-link" onclick="' + config.varName + '.goTo(' + tp + ')" ' + (currentPage >= tp ? 'disabled' : '') + '>末页</button>';
+        container.innerHTML = html;
+      }
+
+      function buildPageNums(cur, tp) {
+        if (tp <= 7) {
+          var arr = [];
+          for (var i = 1; i <= tp; i++) arr.push(i);
+          return arr;
+        }
+        var s = Math.max(1, cur - 2);
+        var e = Math.min(tp, s + 4);
+        s = Math.max(1, e - 4);
+        var arr = [];
+        for (var i = s; i <= e; i++) arr.push(i);
+        return arr;
+      }
+
+      var pagerObj = {
+        goTo: function(p) { currentPage = Math.max(1, Math.min(p, totalPages())); render(); },
+        prev: function() { this.goTo(currentPage - 1); },
+        next: function() { this.goTo(currentPage + 1); },
+        setSize: function(s) { pageSize = s; currentPage = 1; render(); }
+      };
+      render();
+      return pagerObj;
+    }
+
+    /* ── 初始化前端分页器 ── */
+    var logsPager = null;
+    var acctStatsPager = null;
+    (function() {
+      logsPager = createClientPager({
+        tableId: 'logs-table',
+        pagerId: 'logs-pager',
+        metaId: 'logs-pager-meta',
+        linksId: 'logs-pager-links',
+        pageSize: 20,
+        varName: 'logsPager'
+      });
+      acctStatsPager = createClientPager({
+        tableId: 'account-stats-table',
+        pagerId: 'acct-stats-pager',
+        metaId: 'acct-stats-pager-meta',
+        linksId: 'acct-stats-pager-links',
+        pageSize: 20,
+        varName: 'acctStatsPager'
+      });
+    })();
+
     function openModal(id) {
       document.getElementById(id).classList.add('show');
     }
@@ -1133,6 +1237,7 @@
       const url = new URL(window.location.href);
       url.searchParams.set('view', 'accounts');
       url.searchParams.set('page', String(page));
+      url.searchParams.set('pageSize', '{{ page_size }}');
       window.location.href = url.toString();
     }
 
