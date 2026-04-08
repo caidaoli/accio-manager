@@ -690,6 +690,44 @@ def _convert_openai_tools(body: dict[str, Any]) -> list[dict[str, Any]]:
     return converted
 
 
+def _build_accio_tool_config_from_openai_tool_choice(
+    tool_choice: Any,
+) -> dict[str, Any] | None:
+    if isinstance(tool_choice, str):
+        normalized = tool_choice.strip().lower()
+        if normalized == "auto":
+            return {"functionCallingConfig": {"mode": "AUTO"}}
+        if normalized == "none":
+            return {"functionCallingConfig": {"mode": "NONE"}}
+        if normalized == "required":
+            return {"functionCallingConfig": {"mode": "ANY"}}
+        return None
+
+    if not isinstance(tool_choice, dict):
+        return None
+
+    choice_type = str(tool_choice.get("type") or "").strip().lower()
+    if choice_type in {"auto", "none", "required"}:
+        return _build_accio_tool_config_from_openai_tool_choice(choice_type)
+    if choice_type != "function":
+        return None
+
+    function = tool_choice.get("function")
+    if not isinstance(function, dict):
+        return None
+
+    function_name = str(function.get("name") or "").strip()
+    if not function_name:
+        return None
+
+    return {
+        "functionCallingConfig": {
+            "mode": "ANY",
+            "allowedFunctionNames": [function_name],
+        }
+    }
+
+
 def build_accio_request_from_openai(
     body: dict[str, Any],
     *,
@@ -712,8 +750,6 @@ def build_accio_request_from_openai(
             "openai_conversation_id",
             str(body.get("conversation_id")),
         )
-    if body.get("tool_choice") is not None:
-        normalized_properties.setdefault("openai_tool_choice", body.get("tool_choice"))
     if body.get("reasoning") is not None:
         normalized_properties.setdefault("openai_reasoning", body.get("reasoning"))
     if body.get("text") is not None:
@@ -747,6 +783,14 @@ def build_accio_request_from_openai(
     }
     if system_text:
         anthropic_body["system"] = system_text
+
+    accio_tool_config = body.get("toolConfig", body.get("tool_config"))
+    if not isinstance(accio_tool_config, dict):
+        accio_tool_config = _build_accio_tool_config_from_openai_tool_choice(
+            body.get("tool_choice")
+        )
+    if isinstance(accio_tool_config, dict) and accio_tool_config:
+        anthropic_body["tool_config"] = accio_tool_config
 
     tools = _convert_openai_tools(body)
     if tools:

@@ -411,9 +411,8 @@ def build_accio_request_from_gemini(
         properties_payload["generation_config"] = _stringify_json(generation_config)
 
     tool_config = body.get("toolConfig", body.get("tool_config"))
-    if tool_config is not None:
-        properties_payload = request_body.setdefault("properties", {})
-        properties_payload["tool_config"] = _stringify_json(tool_config)
+    if isinstance(tool_config, dict) and tool_config:
+        request_body["tool_config"] = dict(tool_config)
 
     for passthrough_key in ("message_id", "session_key", "conversation_id"):
         if body.get(passthrough_key) is not None:

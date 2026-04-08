@@ -177,6 +177,10 @@ def build_accio_request(
 
     _apply_thinking_config(request_body, body)
 
+    tool_config = body.get("toolConfig", body.get("tool_config"))
+    if isinstance(tool_config, dict) and tool_config:
+        request_body["tool_config"] = dict(tool_config)
+
     tools = body.get("tools")
     if isinstance(tools, list) and tools:
         request_body["tools"] = [
