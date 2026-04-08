@@ -322,6 +322,7 @@ class AccioClient:
                 "Accept": "text/event-stream",
                 "utdid": account.utdid,
                 "version": self.settings.version,
+                "appKey": self.settings.app_key,
                 "user-agent": "node",
             },
             proxies=self.get_proxies(proxy_url),

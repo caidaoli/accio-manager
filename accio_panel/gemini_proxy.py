@@ -178,8 +178,8 @@ def _normalize_part(part: dict[str, Any]) -> dict[str, Any]:
     if part.get("text") is not None:
         normalized["text"] = str(part.get("text") or "")
 
-    if part.get("thought") is not None:
-        normalized["thought"] = bool(part.get("thought"))
+    if part.get("thought") is True:
+        normalized["thought"] = True
 
     thought_signature = part.get("thoughtSignature", part.get("thought_signature"))
     if thought_signature:
@@ -275,12 +275,14 @@ def _normalize_tools(value: Any) -> list[dict[str, Any]]:
             continue
 
         if item.get("name"):
-            parameters_value = item.get("parameters_json", item.get("parametersJson"))
+            parameters_value = item.get(
+                "parameters_json",
+                item.get("parametersJson", item.get("input_schema")),
+            )
             normalized_tools.append(
                 {
                     "name": str(item.get("name") or ""),
                     "description": str(item.get("description") or ""),
-                    "parametersJson": _stringify_json(parameters_value),
                     "parameters_json": _stringify_json(parameters_value),
                 }
             )
@@ -300,51 +302,36 @@ def _normalize_tools(value: Any) -> list[dict[str, Any]]:
                 {
                     "name": str(declaration.get("name") or ""),
                     "description": str(declaration.get("description") or ""),
-                    "parametersJson": _stringify_json(schema),
                     "parameters_json": _stringify_json(schema),
                 }
             )
     return normalized_tools
 
 
-def _normalize_properties(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    normalized = dict(value)
-    for key in ("tool_config", "generation_config"):
-        if normalized.get(key) is not None:
-            normalized[key] = _stringify_json(normalized.get(key))
-    return normalized
-
-
-def build_accio_request_from_gemini(
+def build_generate_content_request(
     body: dict[str, Any],
     *,
-    model: str,
     token: str,
-    utdid: str,
-    version: str,
+    model: str | None = None,
 ) -> dict[str, Any]:
     generation_config = body.get("generationConfig", body.get("generation_config"))
     if not isinstance(generation_config, dict):
         generation_config = {}
 
+    normalized_model = str(model or body.get("model") or "").strip()
     request_body: dict[str, Any] = {
-        "utdid": utdid,
-        "version": version,
         "token": token,
-        "empid": str(body.get("empid") or ""),
-        "tenant": str(body.get("tenant") or ""),
-        "iai_tag": str(body.get("iai_tag", body.get("iaiTag")) or ""),
-        "stream": True,
-        "model": model,
+        "model": normalized_model,
         "request_id": str(
             body.get("request_id")
             or body.get("requestId")
             or f"req-{uuid.uuid4()}"
         ),
-        "message_id": str(body.get("message_id", body.get("messageId")) or ""),
-        "incremental": True,
+        "message_id": str(
+            body.get("message_id")
+            or body.get("messageId")
+            or f"msg-{uuid.uuid4().hex}"
+        ),
         "max_output_tokens": _as_int(
             generation_config.get(
                 "maxOutputTokens",
@@ -353,9 +340,6 @@ def build_accio_request_from_gemini(
             8192,
         ),
         "contents": _normalize_contents(body.get("contents")),
-        "include_thoughts": False,
-        "stop_sequences": [],
-        "properties": {},
     }
 
     system_instruction = body.get("system_instruction")
@@ -367,56 +351,24 @@ def build_accio_request_from_gemini(
     if normalized_system_instruction:
         request_body["system_instruction"] = normalized_system_instruction
 
-    numeric_mappings = {
-        "temperature": "temperature",
-        "topP": "top_p",
-        "topK": "top_k",
-    }
-    for source_key, target_key in numeric_mappings.items():
-        source_value = generation_config.get(source_key, body.get(source_key))
-        if source_value is not None:
-            request_body[target_key] = source_value
-
-    stop_sequences = generation_config.get(
-        "stopSequences",
-        body.get("stop_sequences", body.get("stopSequences")),
-    )
-    if isinstance(stop_sequences, str):
-        normalized_stop_sequences = [stop_sequences] if stop_sequences.strip() else []
-    elif isinstance(stop_sequences, list):
-        normalized_stop_sequences = [
-            str(item or "").strip()
-            for item in stop_sequences
-            if str(item or "").strip()
-        ]
-    else:
-        normalized_stop_sequences = []
-    request_body["stop_sequences"] = normalized_stop_sequences
-
-    if generation_config.get("candidateCount") is not None:
-        request_body["candidate_count"] = generation_config.get("candidateCount")
-    if body.get("timeout") is not None:
-        request_body["timeout"] = body.get("timeout")
-
     tools = _normalize_tools(body.get("tools"))
     if tools:
         request_body["tools"] = tools
 
-    properties = _normalize_properties(body.get("properties"))
-    if properties:
-        request_body["properties"].update(properties)
-
-    if generation_config:
-        properties_payload = request_body.setdefault("properties", {})
-        properties_payload["generation_config"] = _stringify_json(generation_config)
-
-    tool_config = body.get("toolConfig", body.get("tool_config"))
-    if isinstance(tool_config, dict) and tool_config:
-        request_body["tool_config"] = dict(tool_config)
-
-    for passthrough_key in ("message_id", "session_key", "conversation_id"):
-        if body.get(passthrough_key) is not None:
-            request_body[passthrough_key] = body.get(passthrough_key)
+    for passthrough_key in (
+        "message_id",
+        "session_key",
+        "conversation_id",
+        "conversation_name",
+    ):
+        value = body.get(passthrough_key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        request_body[passthrough_key] = value
 
     return request_body
 

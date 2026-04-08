@@ -54,6 +54,7 @@ def _env_list(name: str) -> tuple[str, ...]:
 class Settings:
     version: str = os.getenv("ACCIO_VERSION", "0.5.4")
     base_url: str = os.getenv("ACCIO_BASE_URL", "https://phoenix-gw.alibaba.com")
+    app_key: str = os.getenv("ACCIO_APP_KEY", "35298846").strip()
     callback_host: str = os.getenv("ACCIO_CALLBACK_HOST", "127.0.0.1")
     server_host: str = os.getenv("ACCIO_SERVER_HOST", "0.0.0.0")
     callback_port: int = int(os.getenv("ACCIO_CALLBACK_PORT", "4097"))

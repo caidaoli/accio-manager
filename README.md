@@ -180,7 +180,7 @@ curl http://127.0.0.1:4097/v1/messages \
 - 非流式返回会保留 `thinking` 块；如果上游返回了 `signature`，也会一并透传
 - `/v1/responses` 已支持基础流式事件、非流式返回，以及常见 `input` 项转换
 - `Responses input` 当前支持：纯字符串、`message`/`role` 消息项、`input_text`、`input_image`、`image_url`、`input_file`、`file`、`function_call`、`function_call_output`
-- `Responses` 额外字段如 `metadata`、`user`、`session_id`、`conversation_id`、`previous_response_id`、`include`、`truncation` 会继续向内部请求骨架透传
+- `Responses` 额外字段如 `metadata`、`user`、`include`、`truncation` 会继续向内部请求骨架透传；`session_id` 会规范化到上游支持的顶层 `session_key`，`conversation_id` 会走顶层 `conversation_id`，`previous_response_id` 仅保留在兼容层响应元数据中，不再直接转发给上游
 
 ## 数据目录
 

@@ -690,44 +690,6 @@ def _convert_openai_tools(body: dict[str, Any]) -> list[dict[str, Any]]:
     return converted
 
 
-def _build_accio_tool_config_from_openai_tool_choice(
-    tool_choice: Any,
-) -> dict[str, Any] | None:
-    if isinstance(tool_choice, str):
-        normalized = tool_choice.strip().lower()
-        if normalized == "auto":
-            return {"functionCallingConfig": {"mode": "AUTO"}}
-        if normalized == "none":
-            return {"functionCallingConfig": {"mode": "NONE"}}
-        if normalized == "required":
-            return {"functionCallingConfig": {"mode": "ANY"}}
-        return None
-
-    if not isinstance(tool_choice, dict):
-        return None
-
-    choice_type = str(tool_choice.get("type") or "").strip().lower()
-    if choice_type in {"auto", "none", "required"}:
-        return _build_accio_tool_config_from_openai_tool_choice(choice_type)
-    if choice_type != "function":
-        return None
-
-    function = tool_choice.get("function")
-    if not isinstance(function, dict):
-        return None
-
-    function_name = str(function.get("name") or "").strip()
-    if not function_name:
-        return None
-
-    return {
-        "functionCallingConfig": {
-            "mode": "ANY",
-            "allowedFunctionNames": [function_name],
-        }
-    }
-
-
 def build_accio_request_from_openai(
     body: dict[str, Any],
     *,
@@ -736,33 +698,6 @@ def build_accio_request_from_openai(
     version: str,
 ) -> dict[str, Any]:
     system_text, messages = _convert_openai_messages(body)
-    properties = body.get("properties")
-    normalized_properties = dict(properties) if isinstance(properties, dict) else {}
-    metadata = body.get("metadata")
-    if metadata is not None:
-        normalized_properties.setdefault("openai_metadata", metadata)
-    if body.get("user") is not None:
-        normalized_properties.setdefault("openai_user", str(body.get("user")))
-    if body.get("session_id") is not None:
-        normalized_properties.setdefault("openai_session_id", str(body.get("session_id")))
-    if body.get("conversation_id") is not None:
-        normalized_properties.setdefault(
-            "openai_conversation_id",
-            str(body.get("conversation_id")),
-        )
-    if body.get("reasoning") is not None:
-        normalized_properties.setdefault("openai_reasoning", body.get("reasoning"))
-    if body.get("text") is not None:
-        normalized_properties.setdefault("openai_text", body.get("text"))
-    if body.get("previous_response_id") is not None:
-        normalized_properties.setdefault(
-            "openai_previous_response_id",
-            str(body.get("previous_response_id")),
-        )
-    if body.get("truncation") is not None:
-        normalized_properties.setdefault("openai_truncation", body.get("truncation"))
-    if body.get("include") is not None:
-        normalized_properties.setdefault("openai_include", body.get("include"))
     anthropic_body: dict[str, Any] = {
         "model": body.get("model"),
         "messages": messages,
@@ -770,31 +705,36 @@ def build_accio_request_from_openai(
             "max_completion_tokens",
             body.get("max_tokens", 8192),
         ),
-        "temperature": body.get("temperature"),
-        "top_p": body.get("top_p"),
-        "stop": body.get("stop"),
-        "response_format": body.get("response_format"),
-        "request_id": body.get("request_id", body.get("requestId")),
-        "message_id": body.get("message_id", body.get("messageId", "")),
-        "empid": body.get("empid"),
-        "tenant": body.get("tenant"),
-        "iai_tag": body.get("iai_tag", body.get("iaiTag")),
-        "properties": normalized_properties,
     }
     if system_text:
         anthropic_body["system"] = system_text
 
-    accio_tool_config = body.get("toolConfig", body.get("tool_config"))
-    if not isinstance(accio_tool_config, dict):
-        accio_tool_config = _build_accio_tool_config_from_openai_tool_choice(
-            body.get("tool_choice")
-        )
-    if isinstance(accio_tool_config, dict) and accio_tool_config:
-        anthropic_body["tool_config"] = accio_tool_config
-
     tools = _convert_openai_tools(body)
     if tools:
         anthropic_body["tools"] = tools
+
+    for source_key, target_key in (
+        ("request_id", "request_id"),
+        ("requestId", "request_id"),
+        ("message_id", "message_id"),
+        ("messageId", "message_id"),
+        ("session_key", "session_key"),
+        ("sessionKey", "session_key"),
+        ("session_id", "session_key"),
+        ("sessionId", "session_key"),
+        ("conversation_id", "conversation_id"),
+        ("conversationId", "conversation_id"),
+        ("conversation_name", "conversation_name"),
+        ("conversationName", "conversation_name"),
+    ):
+        value = body.get(source_key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        anthropic_body[target_key] = value
 
     return build_accio_request(
         anthropic_body,
@@ -906,11 +846,7 @@ def build_openai_chat_payload_from_responses(body: dict[str, Any]) -> dict[str, 
         "stop": body.get("stop"),
         "response_format": body.get("response_format"),
         "request_id": body.get("request_id", body.get("requestId")),
-        "message_id": body.get("message_id", body.get("messageId", "")),
-        "empid": body.get("empid"),
-        "tenant": body.get("tenant"),
-        "iai_tag": body.get("iai_tag", body.get("iaiTag")),
-        "properties": body.get("properties"),
+        "message_id": body.get("message_id", body.get("messageId")),
         "user": body.get("user"),
         "metadata": body.get("metadata"),
         "session_id": body.get("session_id", body.get("sessionId")),

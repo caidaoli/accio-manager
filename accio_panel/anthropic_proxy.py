@@ -9,6 +9,8 @@ from typing import Iterator
 
 import requests
 
+from .gemini_proxy import build_generate_content_request
+
 
 SUPPORTED_ANTHROPIC_MODELS = (
     "claude-sonnet-4-6",
@@ -32,6 +34,23 @@ MODEL_OWNERS = {
 }
 
 
+class UpstreamTurnError(Exception):
+    def __init__(
+        self,
+        *,
+        error_code: str = "",
+        error_message: str = "",
+        payload: dict[str, Any] | None = None,
+    ):
+        self.error_code = str(error_code or "").strip()
+        self.error_message = str(error_message or "").strip()
+        self.payload = dict(payload or {})
+        description = self.error_message or "upstream turn error"
+        if self.error_code:
+            description = f"[{self.error_code}] {description}"
+        super().__init__(description)
+
+
 def _usage_summary() -> dict[str, int]:
     return {
         "input_tokens": 0,
@@ -39,54 +58,6 @@ def _usage_summary() -> dict[str, int]:
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
     }
-
-
-def _normalize_thinking_level(value: Any) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in {"low", "medium", "high"}:
-        return normalized
-    return ""
-
-
-def _budget_to_thinking_level(value: Any) -> str:
-    try:
-        budget = int(value or 0)
-    except (TypeError, ValueError):
-        return "high"
-    if budget >= 12000:
-        return "high"
-    if budget >= 4000:
-        return "medium"
-    return "low"
-
-
-def _apply_thinking_config(request_body: dict[str, Any], body: dict[str, Any]) -> None:
-    thinking = body.get("thinking")
-    if not isinstance(thinking, dict):
-        return
-
-    thinking_type = str(thinking.get("type") or "").strip().lower()
-    if thinking_type != "enabled":
-        return
-
-    request_body["include_thoughts"] = True
-    request_body["thinking_level"] = "high"
-    if thinking.get("budget_tokens") is not None:
-        request_body["thinking_budget"] = thinking.get("budget_tokens")
-
-
-def _normalize_stop_sequences(value: Any) -> list[str]:
-    if isinstance(value, str):
-        text = value.strip()
-        return [text] if text else []
-    if not isinstance(value, list):
-        return []
-    items: list[str] = []
-    for item in value:
-        text = str(item or "").strip()
-        if text:
-            items.append(text)
-    return items
 
 
 def _guess_image_mime_type(value: str) -> str:
@@ -135,32 +106,15 @@ def build_accio_request(
     utdid: str,
     version: str,
 ) -> dict[str, Any]:
+    del utdid, version
+
     request_body: dict[str, Any] = {
-        "utdid": utdid,
-        "version": version,
-        "token": token,
-        "empid": str(body.get("empid") or ""),
-        "tenant": str(body.get("tenant") or ""),
-        "iai_tag": str(body.get("iai_tag", body.get("iaiTag")) or ""),
-        "stream": True,
         "model": body.get("model") or DEFAULT_ANTHROPIC_MODEL,
-        "request_id": str(
-            body.get("request_id")
-            or body.get("requestId")
-            or f"req-{uuid.uuid4()}"
+        "max_output_tokens": body.get(
+            "max_output_tokens",
+            body.get("max_tokens", 8192),
         ),
-        "message_id": str(body.get("message_id", body.get("messageId")) or ""),
-        "incremental": True,
-        "max_output_tokens": body.get("max_tokens") or 8192,
-        "contents": [],
-        "stop_sequences": _normalize_stop_sequences(
-            body.get("stop_sequences", body.get("stop"))
-        ),
-        "properties": (
-            dict(body.get("properties"))
-            if isinstance(body.get("properties"), dict)
-            else {}
-        ),
+        "contents": ensure_alternating_roles(convert_messages(body.get("messages") or [])),
     }
 
     system_value = body.get("system")
@@ -168,27 +122,17 @@ def build_accio_request(
     if system_text:
         request_body["system_instruction"] = system_text
 
-    if body.get("temperature") is not None:
-        request_body["temperature"] = body.get("temperature")
-    if body.get("top_p") is not None:
-        request_body["top_p"] = body.get("top_p")
-    if body.get("response_format") is not None:
-        request_body["response_format"] = body.get("response_format")
-
-    _apply_thinking_config(request_body, body)
-
-    tool_config = body.get("toolConfig", body.get("tool_config"))
-    if isinstance(tool_config, dict) and tool_config:
-        request_body["tool_config"] = dict(tool_config)
-
     tools = body.get("tools")
     if isinstance(tools, list) and tools:
         request_body["tools"] = [
             {
                 "name": str(tool.get("name") or ""),
                 "description": str(tool.get("description") or ""),
-                "parametersJson": json.dumps(
-                    tool.get("input_schema") or {},
+                "parameters_json": json.dumps(
+                    tool.get("input_schema")
+                    or tool.get("parameters_json")
+                    or tool.get("parametersJson")
+                    or {},
                     ensure_ascii=False,
                 ),
             }
@@ -196,9 +140,31 @@ def build_accio_request(
             if isinstance(tool, dict) and tool.get("name")
         ]
 
-    contents = convert_messages(body.get("messages") or [])
-    request_body["contents"] = ensure_alternating_roles(contents)
-    return request_body
+    for source_key, target_key in (
+        ("request_id", "request_id"),
+        ("requestId", "request_id"),
+        ("message_id", "message_id"),
+        ("messageId", "message_id"),
+        ("session_key", "session_key"),
+        ("sessionKey", "session_key"),
+        ("conversation_id", "conversation_id"),
+        ("conversationId", "conversation_id"),
+        ("conversation_name", "conversation_name"),
+        ("conversationName", "conversation_name"),
+    ):
+        value = body.get(source_key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        request_body[target_key] = value
+
+    return build_generate_content_request(
+        request_body,
+        token=token,
+    )
 
 
 def convert_messages(messages: list[Any]) -> list[dict[str, Any]]:
@@ -572,6 +538,16 @@ def iter_anthropic_sse_events(
             payload = json.loads(json_text)
         except json.JSONDecodeError:
             continue
+
+        if isinstance(payload, dict) and payload.get("turn_complete"):
+            error_code = str(payload.get("error_code") or "").strip()
+            error_message = str(payload.get("error_message") or "").strip()
+            if error_code or error_message:
+                raise UpstreamTurnError(
+                    error_code=error_code,
+                    error_message=error_message,
+                    payload=payload,
+                )
 
         wrapped_raw = payload.get("raw_response_json") if isinstance(payload, dict) else None
         if strict_wrapped_events:

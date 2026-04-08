@@ -36,6 +36,7 @@ from .app_settings import (
 )
 from .anthropic_proxy import (
     DEFAULT_ANTHROPIC_MODEL,
+    UpstreamTurnError,
     anthropic_error_payload,
     build_accio_request,
     build_models_payload,
@@ -45,7 +46,7 @@ from .anthropic_proxy import (
 from .client import AccioClient
 from .config import Settings
 from .gemini_proxy import (
-    build_accio_request_from_gemini,
+    build_generate_content_request,
     build_gemini_model_payload,
     build_gemini_models_payload,
     decode_gemini_generate_content_response,
@@ -547,6 +548,24 @@ def _openai_error_response(
     )
 
 
+def _native_error_response(status_code: int, message: str) -> JSONResponse:
+    return JSONResponse(
+        {"success": False, "message": message},
+        status_code=status_code,
+    )
+
+
+def _upstream_turn_error_message(exc: UpstreamTurnError) -> str:
+    message = exc.error_message or "上游返回错误。"
+    if exc.error_code:
+        return f"上游返回错误 [{exc.error_code}]: {message}"
+    return f"上游返回错误: {message}"
+
+
+def _should_retry_upstream_turn_error(exc: UpstreamTurnError) -> bool:
+    return str(exc.error_code or "").strip() in {"555"}
+
+
 def _extract_proxy_api_key(request: Request) -> str:
     api_key = str(request.headers.get("x-api-key") or "").strip()
     if api_key:
@@ -587,6 +606,19 @@ def _authorize_proxy_request(
         "无效的 API Key，请使用管理员密码作为 x-api-key 或 Bearer Token。",
         error_type="authentication_error",
     )
+
+
+def _iter_upstream_sse_bytes(response: requests.Response) -> Iterator[bytes]:
+    try:
+        for raw_line in response.iter_lines(decode_unicode=False):
+            if raw_line is None:
+                continue
+            line = raw_line.encode("utf-8") if isinstance(raw_line, str) else raw_line
+            if not line:
+                continue
+            yield line + b"\n\n"
+    finally:
+        response.close()
 
 
 def _ordered_proxy_candidates(
@@ -953,6 +985,31 @@ def _parse_sse_chunk_payloads(chunk: bytes | str) -> list[dict[str, Any] | str]:
         if isinstance(parsed, dict):
             payloads.append(parsed)
     return payloads
+
+
+def _extract_upstream_turn_error_from_chunk(chunk: bytes | str) -> UpstreamTurnError | None:
+    for payload in _parse_sse_chunk_payloads(chunk):
+        if not isinstance(payload, dict) or not payload.get("turn_complete"):
+            continue
+        error_code = str(payload.get("error_code") or "").strip()
+        error_message = str(payload.get("error_message") or "").strip()
+        if not error_code and not error_message:
+            continue
+        return UpstreamTurnError(
+            error_code=error_code,
+            error_message=error_message,
+            payload=payload,
+        )
+    return None
+
+
+def _native_sse_chunk_has_meaningful_output(chunk: bytes | str) -> bool:
+    if _extract_upstream_turn_error_from_chunk(chunk) is not None:
+        return False
+    return any(
+        payload != "[DONE]"
+        for payload in _parse_sse_chunk_payloads(chunk)
+    )
 
 
 def _anthropic_stream_chunk_has_meaningful_output(chunk: bytes | str) -> bool:
@@ -1623,12 +1680,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 error_status="UNAVAILABLE",
             )
 
-        accio_body = build_accio_request_from_gemini(
+        accio_body = build_generate_content_request(
             payload,
             model=normalized_model_name,
             token=account.access_token,
-            utdid=account.utdid,
-            version=settings.version,
         )
         request_id = str(accio_body.get("request_id") or "")
 
@@ -1807,12 +1862,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             stream_account = account
             stream_quota = quota
-            stream_bytes, has_meaningful_output = _build_stream_attempt(
-                stream_account,
-                stream_quota,
-                upstream_response,
-                request_id,
-            )
+            try:
+                stream_bytes, has_meaningful_output = _build_stream_attempt(
+                    stream_account,
+                    stream_quota,
+                    upstream_response,
+                    request_id,
+                )
+            except UpstreamTurnError as exc:
+                if not _should_retry_upstream_turn_error(exc):
+                    return _anthropic_error_response(
+                        502,
+                        _upstream_turn_error_message(exc),
+                    )
+                has_meaningful_output = False
             if not has_meaningful_output:
                 try:
                     retry_account, retry_quota = await asyncio.to_thread(
@@ -1830,12 +1893,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         error_status="UNAVAILABLE",
                     )
 
-                retry_body = build_accio_request_from_gemini(
+                retry_body = build_generate_content_request(
                     payload,
                     model=normalized_model_name,
                     token=retry_account.access_token,
-                    utdid=retry_account.utdid,
-                    version=settings.version,
                 )
                 retry_request_id = str(retry_body.get("request_id") or "")
                 try:
@@ -1864,12 +1925,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 stream_account = retry_account
                 stream_quota = retry_quota
-                stream_bytes, _ = _build_stream_attempt(
-                    stream_account,
-                    stream_quota,
-                    retry_response,
-                    retry_request_id,
-                )
+                try:
+                    stream_bytes, _ = _build_stream_attempt(
+                        stream_account,
+                        stream_quota,
+                        retry_response,
+                        retry_request_id,
+                    )
+                except UpstreamTurnError as exc:
+                    return _anthropic_error_response(
+                        502,
+                        _upstream_turn_error_message(exc),
+                    )
 
             return StreamingResponse(
                 stream_bytes,
@@ -1982,12 +2049,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     error_status="UNAVAILABLE",
                 )
 
-            retry_body = build_accio_request_from_gemini(
+            retry_body = build_generate_content_request(
                 payload,
                 model=normalized_model_name,
                 token=retry_account.access_token,
-                utdid=retry_account.utdid,
-                version=settings.version,
             )
             retry_request_id = str(retry_body.get("request_id") or "")
             try:
@@ -2081,6 +2146,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "durationMs": int((time.perf_counter() - started_at) * 1000),
             }
         )
+        response_headers = {
+            "x-accio-account-id": account.id,
+            "x-accio-account-strategy": panel_settings.api_account_strategy,
+        }
+        if quota.get("success"):
+            response_headers["x-accio-account-remaining"] = str(
+                quota["remaining_value"]
+            )
         return JSONResponse(response_payload, headers=response_headers)
 
     @application.post("/api/auth/login")
@@ -2345,12 +2418,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             return _gemini_error_response(exc.status_code, exc.message, error_status="UNAVAILABLE")
 
-        accio_body = build_accio_request_from_gemini(
+        accio_body = build_generate_content_request(
             payload,
             model=model_name,
             token=account.access_token,
-            utdid=account.utdid,
-            version=settings.version,
         )
         request_id = str(accio_body.get("request_id") or "")
 
@@ -2527,6 +2598,180 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response_headers["x-accio-account-remaining"] = str(quota["remaining_value"])
 
         return JSONResponse(response_payload, headers=response_headers)
+
+    @application.post("/api/adk/llm/generateContent")
+    async def native_generate_content(request: Request) -> Response:
+        panel_settings = panel_settings_store.load()
+        unauthorized = _authorize_proxy_request(request, panel_settings)
+        if unauthorized:
+            return unauthorized
+
+        raw_body = await request.body()
+        if not raw_body.strip():
+            return _native_error_response(400, "请求体不能为空。")
+
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return _native_error_response(400, "请求体必须是合法的 JSON。")
+
+        if not isinstance(payload, dict):
+            return _native_error_response(400, "请求体必须是 JSON 对象。")
+
+        model = str(payload.get("model") or "").strip()
+        if not model:
+            return _native_error_response(400, "请求体缺少 model。")
+
+        allowed, available = _is_allowed_dynamic_model(
+            application,
+            panel_settings,
+            model,
+        )
+        if not allowed:
+            return _native_error_response(
+                400,
+                f"不支持模型 {model}。当前可用模型: {', '.join(available)}",
+            )
+
+        try:
+            account, quota = await asyncio.to_thread(
+                _select_proxy_account,
+                application,
+                panel_settings,
+                model,
+            )
+        except ProxySelectionError as exc:
+            return _native_error_response(exc.status_code, exc.message)
+
+        accio_body = build_generate_content_request(
+            payload,
+            token=account.access_token,
+        )
+
+        try:
+            upstream_response = await asyncio.to_thread(
+                client.generate_content,
+                account,
+                accio_body,
+                proxy_url=panel_settings.upstream_proxy_url,
+            )
+        except requests.RequestException as exc:
+            return _native_error_response(502, f"上游请求失败: {exc}")
+
+        if not upstream_response.ok:
+            try:
+                upstream_text = upstream_response.text[:500]
+            finally:
+                upstream_response.close()
+            return _native_error_response(
+                upstream_response.status_code,
+                upstream_text or "上游返回错误。",
+            )
+
+        stream_account = account
+        stream_quota = quota
+        stream_response = upstream_response
+        prefetched_chunks, remaining_chunks, _ = _prefetch_stream_until_meaningful(
+            _iter_upstream_sse_bytes(upstream_response),
+            chunk_has_meaningful_output=_native_sse_chunk_has_meaningful_output,
+        )
+        turn_error = next(
+            (
+                error
+                for error in (
+                    _extract_upstream_turn_error_from_chunk(chunk)
+                    for chunk in prefetched_chunks
+                )
+                if error is not None
+            ),
+            None,
+        )
+        if turn_error is not None:
+            if not _should_retry_upstream_turn_error(turn_error):
+                return _native_error_response(
+                    502,
+                    _upstream_turn_error_message(turn_error),
+                )
+            try:
+                retry_account, retry_quota = await asyncio.to_thread(
+                    _select_proxy_account,
+                    application,
+                    panel_settings,
+                    model,
+                    exclude_account_ids={account.id},
+                )
+            except ProxySelectionError as exc:
+                return _native_error_response(exc.status_code, exc.message)
+
+            retry_body = build_generate_content_request(
+                payload,
+                token=retry_account.access_token,
+            )
+            try:
+                retry_response = await asyncio.to_thread(
+                    client.generate_content,
+                    retry_account,
+                    retry_body,
+                    proxy_url=panel_settings.upstream_proxy_url,
+                )
+            except requests.RequestException as exc:
+                return _native_error_response(502, f"上游请求失败: {exc}")
+
+            if not retry_response.ok:
+                try:
+                    upstream_text = retry_response.text[:500]
+                finally:
+                    retry_response.close()
+                return _native_error_response(
+                    retry_response.status_code,
+                    upstream_text or "上游返回错误。",
+                )
+
+            stream_account = retry_account
+            stream_quota = retry_quota
+            stream_response = retry_response
+            prefetched_chunks, remaining_chunks, _ = _prefetch_stream_until_meaningful(
+                _iter_upstream_sse_bytes(retry_response),
+                chunk_has_meaningful_output=_native_sse_chunk_has_meaningful_output,
+            )
+            retry_turn_error = next(
+                (
+                    error
+                    for error in (
+                        _extract_upstream_turn_error_from_chunk(chunk)
+                        for chunk in prefetched_chunks
+                    )
+                    if error is not None
+                ),
+                None,
+            )
+            if retry_turn_error is not None:
+                return _native_error_response(
+                    502,
+                    _upstream_turn_error_message(retry_turn_error),
+                )
+
+        response_headers = {
+            "x-accio-account-id": stream_account.id,
+            "x-accio-account-strategy": panel_settings.api_account_strategy,
+        }
+        if stream_quota.get("success"):
+            response_headers["x-accio-account-remaining"] = str(
+                stream_quota["remaining_value"]
+            )
+
+        content_type = "text/event-stream"
+        upstream_headers = getattr(stream_response, "headers", None)
+        if isinstance(upstream_headers, dict):
+            candidate = str(upstream_headers.get("content-type") or "").strip()
+            if candidate:
+                content_type = candidate
+
+        return StreamingResponse(
+            itertools.chain(prefetched_chunks, remaining_chunks),
+            media_type=content_type,
+            headers=response_headers,
+        )
 
     @application.post("/v1/responses")
     async def openai_responses(request: Request) -> Response:
@@ -2837,12 +3082,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             stream_account = account
             stream_quota = quota
             stream_request_id = request_id
-            stream_bytes, has_meaningful_output = _build_stream_attempt(
-                stream_account,
-                stream_quota,
-                upstream_response,
-                stream_request_id,
-            )
+            try:
+                stream_bytes, has_meaningful_output = _build_stream_attempt(
+                    stream_account,
+                    stream_quota,
+                    upstream_response,
+                    stream_request_id,
+                )
+            except UpstreamTurnError as exc:
+                if not _should_retry_upstream_turn_error(exc):
+                    return _openai_error_response(
+                        502,
+                        _upstream_turn_error_message(exc),
+                        error_type="server_error",
+                        code="upstream_error",
+                    )
+                has_meaningful_output = False
             if not has_meaningful_output:
                 try:
                     retry_account, retry_quota = await asyncio.to_thread(
@@ -2897,12 +3152,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 stream_account = retry_account
                 stream_quota = retry_quota
                 stream_request_id = retry_request_id
-                stream_bytes, _ = _build_stream_attempt(
-                    stream_account,
-                    stream_quota,
-                    retry_response,
-                    stream_request_id,
-                )
+                try:
+                    stream_bytes, _ = _build_stream_attempt(
+                        stream_account,
+                        stream_quota,
+                        retry_response,
+                        stream_request_id,
+                    )
+                except UpstreamTurnError as exc:
+                    return _openai_error_response(
+                        502,
+                        _upstream_turn_error_message(exc),
+                        error_type="server_error",
+                        code="upstream_error",
+                    )
 
             return StreamingResponse(
                 stream_bytes,
@@ -2910,60 +3173,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers=_stream_headers(stream_account, stream_quota),
             )
 
-        response_payload = await asyncio.to_thread(
-            decode_non_stream_response,
-            upstream_response,
-            model,
-        )
-        usage = response_payload.get("usage") if isinstance(response_payload, dict) else {}
-        if not isinstance(usage, dict):
-            usage = {}
-        output_summary = _summarize_non_stream_payload(response_payload)
-        if output_summary["empty_response"]:
-            if disable_on_empty_response:
-                _disable_account_model_on_empty_response(
-                    store,
-                    account,
-                    model,
+        should_retry = False
+        retry_due_to_upstream_turn_error = False
+        try:
+            response_payload = await asyncio.to_thread(
+                decode_non_stream_response,
+                upstream_response,
+                model,
+            )
+        except UpstreamTurnError as exc:
+            if not _should_retry_upstream_turn_error(exc):
+                return _openai_error_response(
+                    502,
+                    _upstream_turn_error_message(exc),
+                    error_type="server_error",
+                    code="upstream_error",
                 )
-            usage_stats_store.record_message(
-                account_id=account.id,
-                model=model,
-                input_tokens=int(usage.get("input_tokens") or 0),
-                output_tokens=int(usage.get("output_tokens") or 0),
-                success=True,
-                stop_reason=str(response_payload.get("stop_reason") or "end_turn"),
-            )
-            api_log_store.record(
-                {
-                    "level": "warn",
-                    "event": "v1_responses",
-                    "success": True,
-                    "emptyResponse": True,
-                    "accountId": account.id,
-                    "accountName": account.name,
-                    "fillPriority": account.fill_priority,
-                    "model": model,
-                    "stream": False,
-                    "strategy": panel_settings.api_account_strategy,
-                    "requestId": request_id,
-                    "message": _empty_response_log_message(
+            should_retry = True
+            retry_due_to_upstream_turn_error = True
+        else:
+            usage = response_payload.get("usage") if isinstance(response_payload, dict) else {}
+            if not isinstance(usage, dict):
+                usage = {}
+            output_summary = _summarize_non_stream_payload(response_payload)
+            should_retry = bool(output_summary["empty_response"])
+        if should_retry:
+            if not retry_due_to_upstream_turn_error:
+                if disable_on_empty_response:
+                    _disable_account_model_on_empty_response(
+                        store,
+                        account,
                         model,
-                        disable_model=disable_on_empty_response,
-                    ),
-                    "statusCode": 200,
-                    "stopReason": str(response_payload.get("stop_reason") or "end_turn"),
-                    "inputTokens": int(usage.get("input_tokens") or 0),
-                    "outputTokens": int(usage.get("output_tokens") or 0),
-                    "remainingQuota": quota.get("remaining_value"),
-                    "usedQuota": quota.get("used_value"),
-                    "messagesCount": messages_count,
-                    "maxTokens": max_tokens,
-                    "textChars": int(output_summary["text_chars"]),
-                    "toolUseBlocks": int(output_summary["tool_use_blocks"]),
-                    "durationMs": int((time.perf_counter() - started_at) * 1000),
-                }
-            )
+                    )
+                usage_stats_store.record_message(
+                    account_id=account.id,
+                    model=model,
+                    input_tokens=int(usage.get("input_tokens") or 0),
+                    output_tokens=int(usage.get("output_tokens") or 0),
+                    success=True,
+                    stop_reason=str(response_payload.get("stop_reason") or "end_turn"),
+                )
+                api_log_store.record(
+                    {
+                        "level": "warn",
+                        "event": "v1_responses",
+                        "success": True,
+                        "emptyResponse": True,
+                        "accountId": account.id,
+                        "accountName": account.name,
+                        "fillPriority": account.fill_priority,
+                        "model": model,
+                        "stream": False,
+                        "strategy": panel_settings.api_account_strategy,
+                        "requestId": request_id,
+                        "message": _empty_response_log_message(
+                            model,
+                            disable_model=disable_on_empty_response,
+                        ),
+                        "statusCode": 200,
+                        "stopReason": str(response_payload.get("stop_reason") or "end_turn"),
+                        "inputTokens": int(usage.get("input_tokens") or 0),
+                        "outputTokens": int(usage.get("output_tokens") or 0),
+                        "remainingQuota": quota.get("remaining_value"),
+                        "usedQuota": quota.get("used_value"),
+                        "messagesCount": messages_count,
+                        "maxTokens": max_tokens,
+                        "textChars": int(output_summary["text_chars"]),
+                        "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                        "durationMs": int((time.perf_counter() - started_at) * 1000),
+                    }
+                )
             try:
                 retry_account, retry_quota = await asyncio.to_thread(
                     _select_proxy_account,
@@ -3017,11 +3296,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             account = retry_account
             quota = retry_quota
             request_id = retry_request_id
-            response_payload = await asyncio.to_thread(
-                decode_non_stream_response,
-                retry_response,
-                model,
-            )
+            try:
+                response_payload = await asyncio.to_thread(
+                    decode_non_stream_response,
+                    retry_response,
+                    model,
+                )
+            except UpstreamTurnError as exc:
+                return _openai_error_response(
+                    502,
+                    _upstream_turn_error_message(exc),
+                    error_type="server_error",
+                    code="upstream_error",
+                )
             usage = (
                 response_payload.get("usage")
                 if isinstance(response_payload, dict)
@@ -3394,12 +3681,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             stream_account = account
             stream_quota = quota
             stream_request_id = request_id
-            stream_bytes, has_meaningful_output = _build_stream_attempt(
-                stream_account,
-                stream_quota,
-                upstream_response,
-                stream_request_id,
-            )
+            try:
+                stream_bytes, has_meaningful_output = _build_stream_attempt(
+                    stream_account,
+                    stream_quota,
+                    upstream_response,
+                    stream_request_id,
+                )
+            except UpstreamTurnError as exc:
+                if not _should_retry_upstream_turn_error(exc):
+                    return _openai_error_response(
+                        502,
+                        _upstream_turn_error_message(exc),
+                        error_type="server_error",
+                        code="upstream_error",
+                    )
+                has_meaningful_output = False
             if not has_meaningful_output:
                 try:
                     retry_account, retry_quota = await asyncio.to_thread(
@@ -3454,12 +3751,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 stream_account = retry_account
                 stream_quota = retry_quota
                 stream_request_id = retry_request_id
-                stream_bytes, _ = _build_stream_attempt(
-                    stream_account,
-                    stream_quota,
-                    retry_response,
-                    stream_request_id,
-                )
+                try:
+                    stream_bytes, _ = _build_stream_attempt(
+                        stream_account,
+                        stream_quota,
+                        retry_response,
+                        stream_request_id,
+                    )
+                except UpstreamTurnError as exc:
+                    return _openai_error_response(
+                        502,
+                        _upstream_turn_error_message(exc),
+                        error_type="server_error",
+                        code="upstream_error",
+                    )
 
             return StreamingResponse(
                 stream_bytes,
@@ -3467,60 +3772,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers=_stream_headers(stream_account, stream_quota),
             )
 
-        response_payload = await asyncio.to_thread(
-            decode_non_stream_response,
-            upstream_response,
-            model,
-        )
-        usage = response_payload.get("usage") if isinstance(response_payload, dict) else {}
-        if not isinstance(usage, dict):
-            usage = {}
-        output_summary = _summarize_non_stream_payload(response_payload)
-        if output_summary["empty_response"]:
-            if disable_on_empty_response:
-                _disable_account_model_on_empty_response(
-                    store,
-                    account,
-                    model,
+        should_retry = False
+        retry_due_to_upstream_turn_error = False
+        try:
+            response_payload = await asyncio.to_thread(
+                decode_non_stream_response,
+                upstream_response,
+                model,
+            )
+        except UpstreamTurnError as exc:
+            if not _should_retry_upstream_turn_error(exc):
+                return _openai_error_response(
+                    502,
+                    _upstream_turn_error_message(exc),
+                    error_type="server_error",
+                    code="upstream_error",
                 )
-            usage_stats_store.record_message(
-                account_id=account.id,
-                model=model,
-                input_tokens=int(usage.get("input_tokens") or 0),
-                output_tokens=int(usage.get("output_tokens") or 0),
-                success=True,
-                stop_reason=str(response_payload.get("stop_reason") or "end_turn"),
-            )
-            api_log_store.record(
-                {
-                    "level": "warn",
-                    "event": "v1_chat_completions",
-                    "success": True,
-                    "emptyResponse": True,
-                    "accountId": account.id,
-                    "accountName": account.name,
-                    "fillPriority": account.fill_priority,
-                    "model": model,
-                    "stream": False,
-                    "strategy": panel_settings.api_account_strategy,
-                    "requestId": request_id,
-                    "message": _empty_response_log_message(
+            should_retry = True
+            retry_due_to_upstream_turn_error = True
+        else:
+            usage = response_payload.get("usage") if isinstance(response_payload, dict) else {}
+            if not isinstance(usage, dict):
+                usage = {}
+            output_summary = _summarize_non_stream_payload(response_payload)
+            should_retry = bool(output_summary["empty_response"])
+        if should_retry:
+            if not retry_due_to_upstream_turn_error:
+                if disable_on_empty_response:
+                    _disable_account_model_on_empty_response(
+                        store,
+                        account,
                         model,
-                        disable_model=disable_on_empty_response,
-                    ),
-                    "statusCode": 200,
-                    "stopReason": str(response_payload.get("stop_reason") or "end_turn"),
-                    "inputTokens": int(usage.get("input_tokens") or 0),
-                    "outputTokens": int(usage.get("output_tokens") or 0),
-                    "remainingQuota": quota.get("remaining_value"),
-                    "usedQuota": quota.get("used_value"),
-                    "messagesCount": messages_count,
-                    "maxTokens": max_tokens,
-                    "textChars": int(output_summary["text_chars"]),
-                    "toolUseBlocks": int(output_summary["tool_use_blocks"]),
-                    "durationMs": int((time.perf_counter() - started_at) * 1000),
-                }
-            )
+                    )
+                usage_stats_store.record_message(
+                    account_id=account.id,
+                    model=model,
+                    input_tokens=int(usage.get("input_tokens") or 0),
+                    output_tokens=int(usage.get("output_tokens") or 0),
+                    success=True,
+                    stop_reason=str(response_payload.get("stop_reason") or "end_turn"),
+                )
+                api_log_store.record(
+                    {
+                        "level": "warn",
+                        "event": "v1_chat_completions",
+                        "success": True,
+                        "emptyResponse": True,
+                        "accountId": account.id,
+                        "accountName": account.name,
+                        "fillPriority": account.fill_priority,
+                        "model": model,
+                        "stream": False,
+                        "strategy": panel_settings.api_account_strategy,
+                        "requestId": request_id,
+                        "message": _empty_response_log_message(
+                            model,
+                            disable_model=disable_on_empty_response,
+                        ),
+                        "statusCode": 200,
+                        "stopReason": str(response_payload.get("stop_reason") or "end_turn"),
+                        "inputTokens": int(usage.get("input_tokens") or 0),
+                        "outputTokens": int(usage.get("output_tokens") or 0),
+                        "remainingQuota": quota.get("remaining_value"),
+                        "usedQuota": quota.get("used_value"),
+                        "messagesCount": messages_count,
+                        "maxTokens": max_tokens,
+                        "textChars": int(output_summary["text_chars"]),
+                        "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                        "durationMs": int((time.perf_counter() - started_at) * 1000),
+                    }
+                )
             try:
                 retry_account, retry_quota = await asyncio.to_thread(
                     _select_proxy_account,
@@ -3574,11 +3895,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             account = retry_account
             quota = retry_quota
             request_id = retry_request_id
-            response_payload = await asyncio.to_thread(
-                decode_non_stream_response,
-                retry_response,
-                model,
-            )
+            try:
+                response_payload = await asyncio.to_thread(
+                    decode_non_stream_response,
+                    retry_response,
+                    model,
+                )
+            except UpstreamTurnError as exc:
+                return _openai_error_response(
+                    502,
+                    _upstream_turn_error_message(exc),
+                    error_type="server_error",
+                    code="upstream_error",
+                )
             usage = (
                 response_payload.get("usage")
                 if isinstance(response_payload, dict)
@@ -3952,12 +4281,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             stream_account = account
             stream_quota = quota
-            stream_bytes, has_meaningful_output = _build_stream_attempt(
-                stream_account,
-                stream_quota,
-                upstream_response,
-                request_id,
-            )
+            try:
+                stream_bytes, has_meaningful_output = _build_stream_attempt(
+                    stream_account,
+                    stream_quota,
+                    upstream_response,
+                    request_id,
+                )
+            except UpstreamTurnError as exc:
+                if not _should_retry_upstream_turn_error(exc):
+                    return _anthropic_error_response(
+                        502,
+                        _upstream_turn_error_message(exc),
+                    )
+                has_meaningful_output = False
             if not has_meaningful_output:
                 try:
                     retry_account, retry_quota = await asyncio.to_thread(
@@ -3999,12 +4336,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 stream_account = retry_account
                 stream_quota = retry_quota
-                stream_bytes, _ = _build_stream_attempt(
-                    stream_account,
-                    stream_quota,
-                    retry_response,
-                    retry_request_id,
-                )
+                try:
+                    stream_bytes, _ = _build_stream_attempt(
+                        stream_account,
+                        stream_quota,
+                        retry_response,
+                        retry_request_id,
+                    )
+                except UpstreamTurnError as exc:
+                    return _anthropic_error_response(
+                        502,
+                        _upstream_turn_error_message(exc),
+                    )
 
             return StreamingResponse(
                 stream_bytes,
@@ -4012,64 +4355,78 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers=_stream_headers(stream_account, stream_quota),
             )
 
-        response_payload = await asyncio.to_thread(
-            decode_non_stream_response,
-            upstream_response,
-            model,
-        )
-        usage = response_payload.get("usage") if isinstance(response_payload, dict) else {}
-        if not isinstance(usage, dict):
-            usage = {}
-        output_summary = _summarize_non_stream_payload(response_payload)
-        if output_summary["empty_response"]:
-            if disable_on_empty_response:
-                _disable_account_model_on_empty_response(
-                    store,
-                    account,
-                    model,
+        should_retry = False
+        retry_due_to_upstream_turn_error = False
+        try:
+            response_payload = await asyncio.to_thread(
+                decode_non_stream_response,
+                upstream_response,
+                model,
+            )
+        except UpstreamTurnError as exc:
+            if not _should_retry_upstream_turn_error(exc):
+                return _anthropic_error_response(
+                    502,
+                    _upstream_turn_error_message(exc),
                 )
-            usage_stats_store.record_message(
-                account_id=account.id,
-                model=model,
-                input_tokens=int(usage.get("input_tokens") or 0),
-                output_tokens=int(usage.get("output_tokens") or 0),
-                cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
-                cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
-                success=True,
-                stop_reason=str(response_payload.get("stop_reason") or "end_turn"),
-            )
-            api_log_store.record(
-                {
-                    "level": "warn",
-                    "event": "v1_messages",
-                    "success": True,
-                    "emptyResponse": True,
-                    "accountId": account.id,
-                    "accountName": account.name,
-                    "fillPriority": account.fill_priority,
-                    "model": model,
-                    "stream": False,
-                    "strategy": panel_settings.api_account_strategy,
-                    "requestId": request_id,
-                    "message": _empty_response_log_message(
+            should_retry = True
+            retry_due_to_upstream_turn_error = True
+        else:
+            usage = response_payload.get("usage") if isinstance(response_payload, dict) else {}
+            if not isinstance(usage, dict):
+                usage = {}
+            output_summary = _summarize_non_stream_payload(response_payload)
+            should_retry = bool(output_summary["empty_response"])
+        if should_retry:
+            if not retry_due_to_upstream_turn_error:
+                if disable_on_empty_response:
+                    _disable_account_model_on_empty_response(
+                        store,
+                        account,
                         model,
-                        disable_model=disable_on_empty_response,
-                    ),
-                    "statusCode": 200,
-                    "stopReason": str(response_payload.get("stop_reason") or "end_turn"),
-                    "inputTokens": int(usage.get("input_tokens") or 0),
-                    "outputTokens": int(usage.get("output_tokens") or 0),
-                    "cacheCreationInputTokens": int(usage.get("cache_creation_input_tokens") or 0),
-                    "cacheReadInputTokens": int(usage.get("cache_read_input_tokens") or 0),
-                    "remainingQuota": quota.get("remaining_value"),
-                    "usedQuota": quota.get("used_value"),
-                    "messagesCount": messages_count,
-                    "maxTokens": max_tokens,
-                    "textChars": int(output_summary["text_chars"] or 0),
-                    "toolUseBlocks": int(output_summary["tool_use_blocks"] or 0),
-                    "durationMs": int((time.perf_counter() - started_at) * 1000),
-                }
-            )
+                    )
+                usage_stats_store.record_message(
+                    account_id=account.id,
+                    model=model,
+                    input_tokens=int(usage.get("input_tokens") or 0),
+                    output_tokens=int(usage.get("output_tokens") or 0),
+                    cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+                    cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
+                    success=True,
+                    stop_reason=str(response_payload.get("stop_reason") or "end_turn"),
+                )
+                api_log_store.record(
+                    {
+                        "level": "warn",
+                        "event": "v1_messages",
+                        "success": True,
+                        "emptyResponse": True,
+                        "accountId": account.id,
+                        "accountName": account.name,
+                        "fillPriority": account.fill_priority,
+                        "model": model,
+                        "stream": False,
+                        "strategy": panel_settings.api_account_strategy,
+                        "requestId": request_id,
+                        "message": _empty_response_log_message(
+                            model,
+                            disable_model=disable_on_empty_response,
+                        ),
+                        "statusCode": 200,
+                        "stopReason": str(response_payload.get("stop_reason") or "end_turn"),
+                        "inputTokens": int(usage.get("input_tokens") or 0),
+                        "outputTokens": int(usage.get("output_tokens") or 0),
+                        "cacheCreationInputTokens": int(usage.get("cache_creation_input_tokens") or 0),
+                        "cacheReadInputTokens": int(usage.get("cache_read_input_tokens") or 0),
+                        "remainingQuota": quota.get("remaining_value"),
+                        "usedQuota": quota.get("used_value"),
+                        "messagesCount": messages_count,
+                        "maxTokens": max_tokens,
+                        "textChars": int(output_summary["text_chars"] or 0),
+                        "toolUseBlocks": int(output_summary["tool_use_blocks"] or 0),
+                        "durationMs": int((time.perf_counter() - started_at) * 1000),
+                    }
+                )
             try:
                 retry_account, retry_quota = await asyncio.to_thread(
                     _select_proxy_account,
@@ -4111,11 +4468,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             account = retry_account
             quota = retry_quota
             request_id = retry_request_id
-            response_payload = await asyncio.to_thread(
-                decode_non_stream_response,
-                retry_response,
-                model,
-            )
+            try:
+                response_payload = await asyncio.to_thread(
+                    decode_non_stream_response,
+                    retry_response,
+                    model,
+                )
+            except UpstreamTurnError as exc:
+                return _anthropic_error_response(
+                    502,
+                    _upstream_turn_error_message(exc),
+                )
             usage = (
                 response_payload.get("usage")
                 if isinstance(response_payload, dict)
