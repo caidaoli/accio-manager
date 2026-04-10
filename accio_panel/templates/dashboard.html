@@ -41,9 +41,9 @@
     .hero {
       position: relative;
       overflow: hidden;
-      padding: 28px;
+      padding: 20px 24px;
       border: 1px solid rgba(255, 255, 255, 0.72);
-      border-radius: 24px;
+      border-radius: 20px;
       background:
         linear-gradient(135deg, rgba(16, 86, 170, 0.96), rgba(20, 50, 74, 0.92));
       box-shadow: var(--shadow);
@@ -51,9 +51,9 @@
     }
 
     .hero h1 {
-      margin: 0 0 10px;
-      font-size: clamp(28px, 4vw, 42px);
-      line-height: 1.1;
+      margin: 0;
+      font-size: clamp(22px, 3vw, 30px);
+      line-height: 1.2;
       letter-spacing: 0.02em;
     }
 
@@ -65,29 +65,28 @@
     }
 
     .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 14px;
-      margin-top: 22px;
+      display: flex;
+      gap: 12px;
+      margin-top: 14px;
     }
 
     .stat {
-      padding: 16px 18px;
-      border-radius: 18px;
+      padding: 10px 14px;
+      border-radius: 14px;
       background: rgba(255, 255, 255, 0.12);
       backdrop-filter: blur(8px);
     }
 
     .stat-label {
-      font-size: 12px;
+      font-size: 11px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: rgba(255, 255, 255, 0.68);
     }
 
     .stat-value {
-      margin-top: 8px;
-      font-size: 20px;
+      margin-top: 4px;
+      font-size: 18px;
       font-weight: 700;
       word-break: break-word;
     }
@@ -95,8 +94,8 @@
     .toolbar {
       display: flex;
       flex-wrap: wrap;
-      gap: 12px;
-      margin: 22px 0 20px;
+      gap: 8px;
+      margin: 14px 0 14px;
     }
 
     .button,
@@ -104,8 +103,8 @@
       appearance: none;
       border: none;
       border-radius: 999px;
-      padding: 12px 18px;
-      font-size: 14px;
+      padding: 8px 14px;
+      font-size: 13px;
       font-weight: 600;
       cursor: pointer;
       text-decoration: none;
@@ -135,7 +134,7 @@
     }
 
     .panel {
-      border-radius: 24px;
+      border-radius: 18px;
       background: var(--panel);
       border: 1px solid rgba(255, 255, 255, 0.72);
       box-shadow: var(--shadow);
@@ -150,14 +149,14 @@
 
     th,
     td {
-      padding: 16px 18px;
+      padding: 8px 12px;
       border-bottom: 1px solid var(--line);
       text-align: left;
-      vertical-align: top;
+      vertical-align: middle;
     }
 
     th {
-      font-size: 12px;
+      font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: var(--muted);
@@ -177,24 +176,24 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
-      margin-bottom: 8px;
+      gap: 6px;
+      margin-bottom: 4px;
     }
 
     .meta {
       color: var(--muted);
-      font-size: 13px;
-      line-height: 1.5;
+      font-size: 12px;
+      line-height: 1.4;
     }
 
     .status-chip {
       display: inline-flex;
       align-items: center;
       border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 12px;
+      padding: 2px 8px;
+      font-size: 11px;
       font-weight: 700;
-      margin-bottom: 8px;
+      margin-bottom: 4px;
     }
 
     .status-chip.enabled {
@@ -224,10 +223,10 @@
     .quota-badge {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
+      gap: 6px;
+      padding: 3px 8px;
       border-radius: 999px;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
     }
 
@@ -248,9 +247,9 @@
     }
 
     .progress {
-      margin-top: 10px;
+      margin-top: 6px;
       width: 100%;
-      height: 10px;
+      height: 6px;
       border-radius: 999px;
       background: rgba(20, 50, 74, 0.08);
       overflow: hidden;
@@ -274,14 +273,14 @@
     .actions {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 4px;
     }
 
     .action {
       border: none;
       border-radius: 999px;
-      padding: 9px 12px;
-      font-size: 13px;
+      padding: 5px 10px;
+      font-size: 12px;
       cursor: pointer;
       background: rgba(20, 50, 74, 0.07);
       color: var(--text);
@@ -296,8 +295,8 @@
     .mini-action {
       border: none;
       border-radius: 999px;
-      padding: 8px 10px;
-      font-size: 12px;
+      padding: 4px 8px;
+      font-size: 11px;
       cursor: pointer;
       white-space: nowrap;
       background: rgba(20, 50, 74, 0.08);
@@ -334,18 +333,19 @@
 
     .panel-switch {
       display: flex;
-      gap: 12px;
+      gap: 8px;
       flex-wrap: wrap;
-      margin-top: 18px;
+      margin-top: 14px;
     }
 
     .switch-link {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      padding: 11px 18px;
+      padding: 7px 14px;
       border-radius: 999px;
       text-decoration: none;
+      font-size: 13px;
       font-weight: 700;
       color: rgba(255, 255, 255, 0.84);
       background: rgba(255, 255, 255, 0.10);
@@ -369,14 +369,14 @@
 
     .table-controls {
       justify-content: space-between;
-      margin-bottom: 16px;
-      padding: 22px 22px 0;
+      margin-bottom: 8px;
+      padding: 12px 16px 0;
     }
 
     .batch-bar {
-      margin: 0 22px 16px;
-      padding: 14px 16px;
-      border-radius: 18px;
+      margin: 0 16px 10px;
+      padding: 8px 12px;
+      border-radius: 14px;
       background: rgba(21, 52, 80, 0.05);
       border: 1px solid rgba(20, 50, 74, 0.08);
     }
@@ -408,8 +408,8 @@
 
     .pager {
       justify-content: space-between;
-      margin: 0 22px;
-      padding: 18px 0 22px;
+      margin: 0 16px;
+      padding: 10px 0 14px;
       border-top: 1px solid rgba(20, 50, 74, 0.08);
     }
 
@@ -658,37 +658,16 @@
   <main class="shell">
     <section class="hero">
       <h1>Accio 多账号管理面板</h1>
-      <p>
-        支持登录链接生成、FastAPI 登录回调、账号本地持久化、
-        Token 刷新和额度状态查看。
-      </p>
 
       <div class="stats">
         <div class="stat">
-          <div class="stat-label">账号总数 / 总剩余额度</div>
-          <div class="stat-value">{{ account_count }}（启用 {{ enabled_account_count }}）/ {% if total_remaining_quota is not none %}{{ total_remaining_quota }}{% else %}-{% endif %}</div>
+          <div class="stat-label">账号总数</div>
+          <div class="stat-value">{{ account_count }}<span style="font-size:14px;font-weight:400;opacity:.7;">（启用 {{ enabled_account_count }}）</span></div>
         </div>
         <div class="stat">
-          <div class="stat-label">回调地址</div>
-          <div class="stat-value">{{ callback_url }}</div>
+          <div class="stat-label">总剩余额度</div>
+          <div class="stat-value">{% if total_remaining_quota is not none %}{{ total_remaining_quota }}{% else %}-{% endif %}</div>
         </div>
-        <div class="stat">
-          <div class="stat-label">API 网关</div>
-          <div class="stat-value">{{ base_url }}</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">版本</div>
-          <div class="stat-value">{{ version }}</div>
-        </div>
-      </div>
-
-      <div class="meta" style="margin-top: 16px; color: rgba(255,255,255,0.75);">
-        自动禁用: {{ "开启" if auto_disable_on_empty_quota else "关闭" }} /
-        自动恢复: {{ "开启" if auto_enable_on_recovered_quota else "关闭" }}<br>
-        API 路径: {{ api_base_url }}/v1/messages / {{ api_base_url }}/v1/chat/completions / {{ api_base_url }}/v1/responses / {{ api_base_url }}/v1beta/models/...:generateContent<br>
-        模型目录: {{ supported_models_text }}<br>
-        调度策略: {{ api_account_strategy_label }} / API Key: 管理员密码<br>
-        上游代理: {{ upstream_proxy_url or "未配置" }}
       </div>
 
       <div class="panel-switch">
@@ -707,12 +686,8 @@
       <a class="link-button primary" href="{{ oauth_url }}" target="_blank" rel="noreferrer">OAuth 登录页</a>
       <button class="button secondary" type="button" onclick="openImportDialog()">导入 JSON</button>
       <button class="button success" type="button" onclick="refreshAll()">刷新全部 Token</button>
-      <a class="link-button secondary" href="/dashboard?view=settings&page=1&pageSize={{ page_size }}">配置中心</a>
-      <a class="link-button secondary" href="/dashboard?view=accounts&page={{ current_page }}&pageSize={{ page_size }}">账号区域</a>
-      <a class="link-button secondary" href="/dashboard?view=stats&page=1&pageSize={{ page_size }}">统计界面</a>
-      <a class="link-button secondary" href="/dashboard?view=logs&page=1&pageSize={{ page_size }}">日志界面</a>
-      <button class="button secondary" type="button" onclick="logoutAdmin()">退出登录</button>
       <a class="link-button secondary" href="/dashboard?view={{ current_view }}&page={{ current_page }}&pageSize={{ page_size }}">刷新面板</a>
+      <button class="button secondary" type="button" onclick="logoutAdmin()">退出登录</button>
     </section>
 
     <section class="panel">
@@ -986,8 +961,6 @@
               </div>
               <div class="meta" id="status-hint-{{ account.id }}">{{ account.status.hint }}</div>
               <div class="meta" id="account-priority-{{ account.id }}">优先级: {{ account.fill_priority }}</div>
-              <div class="meta">UTDID: {{ account.utdid }}</div>
-              <div class="meta">新增: {{ account.added_at }}</div>
               <div class="meta" id="account-updated-{{ account.id }}">更新: {{ account.updated_at }}</div>
             </td>
             <td>
@@ -1005,7 +978,7 @@
               <div class="progress {{ account.quota.level }}" id="quota-progress-{{ account.id }}">
                 <span id="quota-progress-bar-{{ account.id }}" style="width: {{ account.quota.remaining_ratio }}%"></span>
               </div>
-              <div class="meta" style="margin-top: 10px;" id="quota-reset-{{ account.id }}">
+              <div class="meta" style="margin-top: 4px;" id="quota-reset-{{ account.id }}">
                 重置时间: {{ account.quota.reset_text }}
               </div>
               <div class="meta" id="quota-used-{{ account.id }}">
