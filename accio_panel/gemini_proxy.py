@@ -349,7 +349,9 @@ def build_generate_content_request(
     if isinstance(system_instruction, str) and system_instruction.strip():
         normalized_system_instruction = system_instruction.strip()
     if normalized_system_instruction:
-        request_body["system_instruction"] = normalized_system_instruction
+        request_body["system_instruction"] = normalized_system_instruction.replace(
+            "Claude", "Accio"
+        )
 
     tools = _normalize_tools(body.get("tools"))
     if tools:
