@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 import asyncio
+import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -395,7 +396,118 @@ async def _invoke_gemini_generate_content_route(
     return response, b"".join(body_chunks).decode("utf-8")
 
 
+async def _invoke_openai_responses_route(
+    app,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, object],
+):
+    route = next(
+        route
+        for route in app.router.routes
+        if getattr(route, "path", "") == "/v1/responses"
+        and "POST" in getattr(route, "methods", set())
+    )
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    received = False
+
+    async def receive():
+        nonlocal received
+        if received:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        received = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "path": "/v1/responses",
+        "raw_path": b"/v1/responses",
+        "headers": [
+            (key.lower().encode("utf-8"), value.encode("utf-8"))
+            for key, value in headers.items()
+        ],
+        "query_string": b"",
+        "scheme": "http",
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+        "root_path": "",
+        "app": app,
+    }
+    request = Request(scope, receive)
+    response = await route.endpoint(request)
+    body_chunks: list[bytes] = []
+    if hasattr(response, "body_iterator"):
+        async for chunk in response.body_iterator:
+            body_chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+    else:
+        body_chunks.append(response.body)
+    return response, b"".join(body_chunks).decode("utf-8")
+
+
+def _read_api_logs(settings: Settings) -> list[dict[str, object]]:
+    if not settings.api_logs_file.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in settings.api_logs_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 class ProxyRoutingTests(unittest.TestCase):
+    def test_create_app_does_not_register_deprecated_on_event_hooks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                    create_app(settings)
+
+            self.assertEqual(
+                [
+                    str(item.message)
+                    for item in caught
+                    if "on_event is deprecated" in str(item.message)
+                ],
+                [],
+            )
+
+    def test_create_app_lifespan_starts_and_stops_quota_scheduler(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+
+            async def _exercise() -> None:
+                scheduler_started = asyncio.Event()
+                scheduler_cancelled = asyncio.Event()
+
+                async def _blocking_scheduler(_application):
+                    scheduler_started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        scheduler_cancelled.set()
+                        raise
+
+                with patch("accio_panel.web._quota_scheduler_loop", _blocking_scheduler):
+                    app = create_app(settings)
+                    self.assertIsNone(app.state.quota_scheduler_task)
+                    async with app.router.lifespan_context(app):
+                        task = app.state.quota_scheduler_task
+                        self.assertIsNotNone(task)
+                        await asyncio.wait_for(scheduler_started.wait(), timeout=1)
+                        self.assertFalse(task.done())
+
+                    await asyncio.wait_for(scheduler_cancelled.wait(), timeout=1)
+                self.assertIsNone(app.state.quota_scheduler_task)
+
+            asyncio.run(_exercise())
+
     def test_ordered_proxy_candidates_excludes_auto_disabled_and_model_disabled_accounts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = AccountStore(Path(temp_dir) / "accounts")
@@ -603,6 +715,28 @@ class ProxyRoutingTests(unittest.TestCase):
             disabled_account = store.get_account("acc-1")
             self.assertIsNotNone(disabled_account)
             self.assertIn("deepseek-r1", disabled_account.disabled_models)
+            attempt_logs = [
+                item
+                for item in _read_api_logs(settings)
+                if item.get("phase") == "upstream_attempt"
+            ]
+            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(
+                [
+                    (
+                        item.get("event"),
+                        item.get("attempt"),
+                        item.get("accountId"),
+                        item.get("success"),
+                        item.get("stopReason"),
+                    )
+                    for item in attempt_logs
+                ],
+                [
+                    ("v1_chat_completions", 1, "acc-1", False, "empty_response"),
+                    ("v1_chat_completions", 2, "acc-2", True, "end_turn"),
+                ],
+            )
 
     def test_openai_stream_claude_retries_with_different_account_after_empty_response(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -673,6 +807,179 @@ class ProxyRoutingTests(unittest.TestCase):
             disabled_account = store.get_account("acc-1")
             self.assertIsNotNone(disabled_account)
             self.assertNotIn("claude-sonnet-4-6", disabled_account.disabled_models)
+
+    def test_openai_responses_stream_retries_once_after_empty_response_and_logs_attempts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_empty_claude_stream()],
+                    "acc-2": [_text_claude_stream("第二个账号命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            store.save(
+                Account(
+                    id="acc-1",
+                    name="账号1",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    fill_priority=0,
+                )
+            )
+            store.save(
+                Account(
+                    id="acc-2",
+                    name="账号2",
+                    access_token="token-2",
+                    refresh_token="refresh-2",
+                    utdid="utdid-2",
+                    fill_priority=10,
+                )
+            )
+
+            response, response_text = asyncio.run(
+                _invoke_openai_responses_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "stream": True,
+                        "input": "hello",
+                    },
+                )
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-accio-account-id"], "acc-2")
+            self.assertIn("第二个账号命中", response_text)
+            self.assertEqual(fake_client.calls, ["acc-1", "acc-2"])
+            attempt_logs = [
+                item
+                for item in _read_api_logs(settings)
+                if item.get("phase") == "upstream_attempt"
+            ]
+            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(
+                [
+                    (
+                        item.get("event"),
+                        item.get("attempt"),
+                        item.get("accountId"),
+                        item.get("success"),
+                        item.get("stopReason"),
+                    )
+                    for item in attempt_logs
+                ],
+                [
+                    ("v1_responses", 1, "acc-1", False, "empty_response"),
+                    ("v1_responses", 2, "acc-2", True, "end_turn"),
+                ],
+            )
+
+    def test_anthropic_stream_retries_once_after_empty_response_and_logs_attempts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_empty_claude_stream()],
+                    "acc-2": [_text_claude_stream("第二个账号命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            store.save(
+                Account(
+                    id="acc-1",
+                    name="账号1",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    fill_priority=0,
+                )
+            )
+            store.save(
+                Account(
+                    id="acc-2",
+                    name="账号2",
+                    access_token="token-2",
+                    refresh_token="refresh-2",
+                    utdid="utdid-2",
+                    fill_priority=10,
+                )
+            )
+
+            response, response_text = asyncio.run(
+                _invoke_anthropic_messages_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 256,
+                        "stream": True,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-accio-account-id"], "acc-2")
+            self.assertIn("第二个账号命中", response_text)
+            self.assertEqual(fake_client.calls, ["acc-1", "acc-2"])
+            attempt_logs = [
+                item
+                for item in _read_api_logs(settings)
+                if item.get("phase") == "upstream_attempt"
+            ]
+            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(
+                [
+                    (
+                        item.get("event"),
+                        item.get("attempt"),
+                        item.get("accountId"),
+                        item.get("success"),
+                        item.get("stopReason"),
+                    )
+                    for item in attempt_logs
+                ],
+                [
+                    ("v1_messages", 1, "acc-1", False, "empty_response"),
+                    ("v1_messages", 2, "acc-2", True, "end_turn"),
+                ],
+            )
 
     def test_anthropic_non_stream_claude_retries_with_different_account_after_empty_response(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -877,6 +1184,28 @@ class ProxyRoutingTests(unittest.TestCase):
             self.assertEqual(response.headers["x-accio-account-id"], "acc-2")
             self.assertIn("第二个账号命中", response_text)
             self.assertEqual(fake_client.calls, ["acc-1", "acc-2"])
+            attempt_logs = [
+                item
+                for item in _read_api_logs(settings)
+                if item.get("phase") == "upstream_attempt"
+            ]
+            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(
+                [
+                    (
+                        item.get("event"),
+                        item.get("attempt"),
+                        item.get("accountId"),
+                        item.get("success"),
+                        item.get("stopReason"),
+                    )
+                    for item in attempt_logs
+                ],
+                [
+                    ("v1_chat_completions", 1, "acc-1", False, "upstream_turn_error"),
+                    ("v1_chat_completions", 2, "acc-2", True, "end_turn"),
+                ],
+            )
 
     def test_anthropic_non_stream_retries_once_after_retryable_upstream_turn_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -947,6 +1276,28 @@ class ProxyRoutingTests(unittest.TestCase):
             self.assertEqual(response.headers["x-accio-account-id"], "acc-2")
             self.assertIn("第二个账号命中", response_text)
             self.assertEqual(fake_client.calls, ["acc-1", "acc-2"])
+            attempt_logs = [
+                item
+                for item in _read_api_logs(settings)
+                if item.get("phase") == "upstream_attempt"
+            ]
+            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(
+                [
+                    (
+                        item.get("event"),
+                        item.get("attempt"),
+                        item.get("accountId"),
+                        item.get("success"),
+                        item.get("stopReason"),
+                    )
+                    for item in attempt_logs
+                ],
+                [
+                    ("v1_messages", 1, "acc-1", False, "upstream_turn_error"),
+                    ("v1_messages", 2, "acc-2", True, "end_turn"),
+                ],
+            )
 
     def test_native_generate_content_retries_once_after_retryable_upstream_turn_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1014,6 +1365,206 @@ class ProxyRoutingTests(unittest.TestCase):
             self.assertEqual(response.headers["x-accio-account-id"], "acc-2")
             self.assertIn("第二个账号命中", response_text)
             self.assertEqual(fake_client.calls, ["acc-1", "acc-2"])
+            attempt_logs = [
+                item
+                for item in _read_api_logs(settings)
+                if item.get("phase") == "upstream_attempt"
+            ]
+            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(
+                [
+                    (
+                        item.get("event"),
+                        item.get("attempt"),
+                        item.get("accountId"),
+                        item.get("success"),
+                        item.get("stopReason"),
+                    )
+                    for item in attempt_logs
+                ],
+                [
+                    ("native_generate_content", 1, "acc-1", False, "upstream_turn_error"),
+                    ("native_generate_content", 2, "acc-2", True, "upstream_request_completed"),
+                ],
+            )
+
+    def test_openai_responses_retry_logs_each_upstream_attempt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [
+                        _upstream_turn_error_stream(
+                            code="555",
+                            message="blocked by sentinel rate limit",
+                        )
+                    ],
+                    "acc-2": [_text_claude_stream("第二个账号命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            store.save(
+                Account(
+                    id="acc-1",
+                    name="账号1",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    fill_priority=0,
+                )
+            )
+            store.save(
+                Account(
+                    id="acc-2",
+                    name="账号2",
+                    access_token="token-2",
+                    refresh_token="refresh-2",
+                    utdid="utdid-2",
+                    fill_priority=10,
+                )
+            )
+
+            response, response_text = asyncio.run(
+                _invoke_openai_responses_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "input": "hello",
+                    },
+                )
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("第二个账号命中", response_text)
+            attempt_logs = [
+                item
+                for item in _read_api_logs(settings)
+                if item.get("phase") == "upstream_attempt"
+            ]
+            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(
+                [
+                    (
+                        item.get("event"),
+                        item.get("attempt"),
+                        item.get("accountId"),
+                        item.get("success"),
+                        item.get("stopReason"),
+                    )
+                    for item in attempt_logs
+                ],
+                [
+                    ("v1_responses", 1, "acc-1", False, "upstream_turn_error"),
+                    ("v1_responses", 2, "acc-2", True, "end_turn"),
+                ],
+            )
+
+    def test_gemini_generate_content_success_logs_upstream_attempt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_text_claude_stream("Gemini 兼容命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            store.save(
+                Account(
+                    id="acc-1",
+                    name="账号1",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    fill_priority=0,
+                )
+            )
+
+            with patch(
+                "accio_panel.web.decode_gemini_generate_content_response",
+                return_value={
+                    "candidates": [
+                        {
+                            "content": {
+                                "role": "model",
+                                "parts": [{"text": "Gemini 兼容命中"}],
+                            },
+                            "finishReason": "STOP",
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 1,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 2,
+                    },
+                },
+            ):
+                response, response_text = asyncio.run(
+                    _invoke_gemini_generate_content_route(
+                        app,
+                        headers={"x-goog-api-key": "admin"},
+                        model_name="claude-sonnet-4-6",
+                        payload={
+                            "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+                        },
+                    )
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Gemini 兼容命中", response_text)
+            attempt_logs = [
+                item
+                for item in _read_api_logs(settings)
+                if item.get("phase") == "upstream_attempt"
+            ]
+            self.assertEqual(len(attempt_logs), 1)
+            self.assertEqual(
+                [
+                    (
+                        item.get("event"),
+                        item.get("attempt"),
+                        item.get("accountId"),
+                        item.get("success"),
+                        item.get("stopReason"),
+                    )
+                    for item in attempt_logs
+                ],
+                [
+                    ("gemini_generate_content", 1, "acc-1", True, "STOP"),
+                ],
+            )
 
     def test_anthropic_messages_route_converts_to_reqtxt_standard_body(self):
         with tempfile.TemporaryDirectory() as temp_dir:

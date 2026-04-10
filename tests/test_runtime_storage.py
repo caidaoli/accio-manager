@@ -49,6 +49,21 @@ class _FakeGateway:
 
 
 class RuntimeStorageTests(unittest.TestCase):
+    def test_settings_version_is_fixed_and_ignores_accio_version_env(self):
+        import accio_panel.config as config_module
+
+        with patch.dict(
+            os.environ,
+            {"ACCIO_VERSION": "9.9.9"},
+            clear=False,
+        ):
+            reloaded = importlib.reload(config_module)
+            try:
+                settings = reloaded.Settings()
+                self.assertEqual(settings.version, "1.0.0")
+            finally:
+                importlib.reload(config_module)
+
     def test_settings_uses_binary_adjacent_data_dir_when_running_from_nuitka(self):
         import accio_panel.config as config_module
 
