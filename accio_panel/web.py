@@ -790,25 +790,32 @@ def _check_proxy_candidate(
 
 def _cached_quota_view(account: Account) -> dict[str, Any]:
     remaining = account.last_remaining_quota
-    if remaining is not None and remaining > 0:
+    if remaining is not None and remaining >= 0:
+        total = account.last_total_quota or 0
+        used = max(0, total - remaining) if total > 0 else 0
+        remaining_ratio = (
+            max(0, min(100, round((remaining / total) * 100)))
+            if total > 0
+            else 0
+        )
         level = "low"
-        if remaining < 20:
+        if remaining_ratio < 20:
             level = "high"
-        elif remaining < 50:
+        elif remaining_ratio < 50:
             level = "medium"
         return {
             "success": True,
-            "used_value": 100 - remaining,
-            "used_text": f"{100 - remaining}%",
+            "used_value": used,
+            "used_text": f"{used}/{total}" if total > 0 else "-",
             "remaining_value": remaining,
-            "remaining_ratio": remaining,
-            "remaining_text": f"{remaining}%",
+            "remaining_ratio": remaining_ratio,
+            "remaining_text": f"{remaining}/{total}" if total > 0 else str(remaining),
             "reset_text": "-",
             "level": level,
             "message": "",
         }
     return {
-        "success": remaining is not None,
+        "success": False,
         "used_value": 0,
         "used_text": "-",
         "remaining_value": 0,
@@ -1253,6 +1260,7 @@ def _apply_quota_result(
 
     if quota["success"]:
         account.last_remaining_quota = quota["remaining_value"]
+        account.last_total_quota = quota.get("total_value")
         if (
             panel_settings.auto_disable_on_empty_quota
             and account.manual_enabled

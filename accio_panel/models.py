@@ -74,6 +74,7 @@ class Account:
     auto_disabled_reason: str | None = None
     last_quota_check_at: int | None = None
     last_remaining_quota: int | None = None
+    last_total_quota: int | None = None
     next_quota_check_at: int | None = None
     next_quota_check_reason: str | None = None
     disabled_models: dict[str, str] = field(default_factory=dict)
@@ -96,6 +97,7 @@ class Account:
             auto_disabled_reason=data.get("autoDisabledReason"),
             last_quota_check_at=normalize_timestamp(data.get("lastQuotaCheckAt")),
             last_remaining_quota=data.get("lastRemainingQuota"),
+            last_total_quota=data.get("lastTotalQuota"),
             next_quota_check_at=normalize_timestamp(data.get("nextQuotaCheckAt")),
             next_quota_check_reason=data.get("nextQuotaCheckReason"),
             disabled_models=normalize_disabled_models(
@@ -120,6 +122,7 @@ class Account:
             "autoDisabledReason": self.auto_disabled_reason,
             "lastQuotaCheckAt": self.last_quota_check_at,
             "lastRemainingQuota": self.last_remaining_quota,
+            "lastTotalQuota": self.last_total_quota,
             "nextQuotaCheckAt": self.next_quota_check_at,
             "nextQuotaCheckReason": self.next_quota_check_reason,
             "disabledModels": self.disabled_models,
