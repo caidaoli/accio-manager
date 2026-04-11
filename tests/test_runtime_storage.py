@@ -60,7 +60,7 @@ class RuntimeStorageTests(unittest.TestCase):
             reloaded = importlib.reload(config_module)
             try:
                 settings = reloaded.Settings()
-                self.assertEqual(settings.version, "1.0.0")
+                self.assertEqual(settings.version, "0.8.8")
             finally:
                 importlib.reload(config_module)
 
