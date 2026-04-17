@@ -37,6 +37,17 @@ class _FakeSSEUpstreamResponse:
         self.closed = True
 
 
+class _FakeHTTPUpstreamResponse:
+    def __init__(self, status_code: int, text: str):
+        self.status_code = status_code
+        self.ok = status_code < 400
+        self.text = text
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class _FakeProxyClient:
     def __init__(self, responses_by_account_id: dict[str, list[_FakeSSEUpstreamResponse]]):
         self._responses_by_account_id = {
@@ -192,6 +203,22 @@ def _upstream_turn_error_stream(
                 "error_message": message,
             }
         ]
+    )
+
+
+def _quota_exhausted_http_error_response() -> _FakeHTTPUpstreamResponse:
+    return _FakeHTTPUpstreamResponse(
+        429,
+        json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": "quota exhausted",
+                },
+            },
+            ensure_ascii=False,
+        ),
     )
 
 
@@ -1282,6 +1309,94 @@ class ProxyRoutingTests(unittest.TestCase):
                 if item.get("phase") == "upstream_attempt"
             ]
             self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(
+                [
+                    (
+                        item.get("event"),
+                        item.get("attempt"),
+                        item.get("accountId"),
+                        item.get("success"),
+                        item.get("stopReason"),
+                    )
+                    for item in attempt_logs
+                ],
+                [
+                    ("v1_messages", 1, "acc-1", False, "upstream_turn_error"),
+                    ("v1_messages", 2, "acc-2", True, "end_turn"),
+                ],
+            )
+
+    def test_anthropic_non_stream_retries_once_after_retryable_quota_exhausted_http_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_quota_exhausted_http_error_response()],
+                    "acc-2": [_text_claude_stream("第二个账号命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            store.save(
+                Account(
+                    id="acc-1",
+                    name="账号1",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    fill_priority=0,
+                )
+            )
+            store.save(
+                Account(
+                    id="acc-2",
+                    name="账号2",
+                    access_token="token-2",
+                    refresh_token="refresh-2",
+                    utdid="utdid-2",
+                    fill_priority=10,
+                )
+            )
+
+            response, response_text = asyncio.run(
+                _invoke_anthropic_messages_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 256,
+                        "stream": False,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-accio-account-id"], "acc-2")
+            self.assertIn("第二个账号命中", response_text)
+            self.assertEqual(fake_client.calls, ["acc-1", "acc-2"])
+            attempt_logs = [
+                item
+                for item in _read_api_logs(settings)
+                if item.get("phase") == "upstream_attempt"
+            ]
+            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(attempt_logs[0]["errorCode"], "429")
             self.assertEqual(
                 [
                     (

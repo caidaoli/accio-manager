@@ -15,6 +15,32 @@ from .models import Account
 _ResponseT = TypeVar("_ResponseT")
 
 
+class _SyntheticTurnErrorUpstreamResponse:
+    def __init__(self, *, error_code: str, error_message: str):
+        self.error_code = str(error_code or "").strip()
+        self.error_message = str(error_message or "").strip()
+        try:
+            self.status_code = int(self.error_code)
+        except ValueError:
+            self.status_code = 200
+        self.closed = False
+
+    def iter_lines(self, decode_unicode: bool = False):
+        payload = {
+            "turn_complete": True,
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+        }
+        line = f"data: {json.dumps(payload, ensure_ascii=False)}"
+        if decode_unicode:
+            yield line
+            return
+        yield line.encode("utf-8")
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def upstream_turn_error_message(exc: UpstreamTurnError) -> str:
     message = exc.error_message or "上游返回错误。"
     if exc.error_code:
@@ -23,7 +49,69 @@ def upstream_turn_error_message(exc: UpstreamTurnError) -> str:
 
 
 def should_retry_upstream_turn_error(exc: UpstreamTurnError) -> bool:
-    return str(exc.error_code or "").strip() in {"555"}
+    error_code = str(exc.error_code or "").strip()
+    if error_code == "555":
+        return True
+    if error_code != "429":
+        return False
+    return "quota exhausted" in str(exc.error_message or "").strip().lower()
+
+
+def _normalize_upstream_error_message(message: str, *, status_code: int) -> str:
+    normalized = str(message or "").strip()
+    if not normalized:
+        return ""
+    status_prefix = f"上游返回错误 [{status_code}]:"
+    generic_prefix = "上游返回错误:"
+    if normalized.startswith(status_prefix):
+        normalized = normalized[len(status_prefix) :].strip()
+    if normalized.startswith(generic_prefix):
+        normalized = normalized[len(generic_prefix) :].strip()
+    return normalized
+
+
+def _extract_upstream_error_message(body_text: str, *, status_code: int) -> str:
+    normalized = str(body_text or "").strip()
+    if not normalized:
+        return ""
+    try:
+        payload = json.loads(normalized)
+    except json.JSONDecodeError:
+        return _normalize_upstream_error_message(normalized, status_code=status_code)
+
+    if isinstance(payload, dict):
+        error_value = payload.get("error")
+        if isinstance(error_value, dict):
+            nested_message = error_value.get("message")
+            if nested_message is not None:
+                return _normalize_upstream_error_message(
+                    str(nested_message),
+                    status_code=status_code,
+                )
+        direct_message = payload.get("message")
+        if direct_message is not None:
+            return _normalize_upstream_error_message(
+                str(direct_message),
+                status_code=status_code,
+            )
+    return _normalize_upstream_error_message(normalized, status_code=status_code)
+
+
+def _build_retryable_upstream_turn_error_response(
+    status_code: int,
+    body_text: str,
+) -> _SyntheticTurnErrorUpstreamResponse | None:
+    if int(status_code) != 429:
+        return None
+    error_message = _extract_upstream_error_message(body_text, status_code=status_code)
+    if "quota exhausted" not in error_message.lower() and "quota exhausted" not in str(
+        body_text or ""
+    ).lower():
+        return None
+    return _SyntheticTurnErrorUpstreamResponse(
+        error_code=str(status_code),
+        error_message=error_message or "quota exhausted",
+    )
 
 
 def record_proxy_log(
@@ -190,9 +278,16 @@ async def request_upstream_or_error(
 
     upstream_text = ""
     try:
-        upstream_text = upstream_response.text[:500]
+        upstream_text = str(upstream_response.text or "")
     finally:
         upstream_response.close()
+    retryable_upstream_response = _build_retryable_upstream_turn_error_response(
+        upstream_response.status_code,
+        upstream_text,
+    )
+    if retryable_upstream_response is not None:
+        return retryable_upstream_response
+    upstream_text = upstream_text[:500]
     if usage_failure_recorder is not None:
         usage_failure_recorder("upstream_error")
     record_attempt(

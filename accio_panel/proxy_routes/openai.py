@@ -30,6 +30,7 @@ from ..upstream_support import (
     openai_chat_chunk_has_meaningful_output as _openai_chat_chunk_has_meaningful_output,
     openai_responses_chunk_has_meaningful_output as _openai_responses_chunk_has_meaningful_output,
     prefetch_stream_until_meaningful as _prefetch_stream_until_meaningful,
+    record_proxy_log,
     request_upstream_or_error,
     should_retry_upstream_turn_error as _should_retry_upstream_turn_error,
     summarize_non_stream_payload as _summarize_non_stream_payload,

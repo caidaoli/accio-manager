@@ -23,6 +23,7 @@ from ..upstream_support import (
     is_stream_summary_empty as _is_stream_summary_empty,
     make_upstream_attempt_logger as _make_upstream_attempt_logger,
     prefetch_stream_until_meaningful as _prefetch_stream_until_meaningful,
+    record_proxy_log,
     request_upstream_or_error,
     should_retry_upstream_turn_error as _should_retry_upstream_turn_error,
     summarize_non_stream_payload as _summarize_non_stream_payload,

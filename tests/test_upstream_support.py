@@ -9,6 +9,7 @@ import requests
 from accio_panel.api_logs import ApiLogStore
 from accio_panel.models import Account
 from accio_panel.upstream_support import (
+    extract_upstream_turn_error_from_chunk,
     make_upstream_attempt_logger,
     request_upstream_or_error,
 )
@@ -143,6 +144,61 @@ class UpstreamSupportTests(unittest.TestCase):
             self.assertEqual(entries[0]["statusCode"], 503)
             self.assertEqual(entries[0]["message"], "upstream failed")
             self.assertEqual(entries[0]["stopReason"], "upstream_error")
+
+    def test_request_upstream_or_error_wraps_retryable_quota_exhausted_as_turn_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = Path(temp_dir) / "api.log"
+            store = ApiLogStore(log_file)
+            record_attempt = make_upstream_attempt_logger(
+                store,
+                event="v1_messages",
+                model="claude-sonnet-4-6",
+                strategy="fill",
+                root_request_id="root-request",
+            )
+            upstream_response = _FakeUpstreamResponse(
+                429,
+                json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": "quota exhausted",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+            async def _return_error_response():
+                return upstream_response
+
+            result = asyncio.run(
+                request_upstream_or_error(
+                    _return_error_response,
+                    account=self.account,
+                    quota=self.quota,
+                    request_id="attempt-request",
+                    attempt=1,
+                    stream=False,
+                    started_at=0.0,
+                    record_attempt=record_attempt,
+                    build_error_response=lambda status, message, stop_reason: _FakeErrorResponse(
+                        status,
+                        message,
+                        stop_reason,
+                    ),
+                )
+            )
+
+            lines = list(result.iter_lines(decode_unicode=True))
+            self.assertEqual(len(lines), 1)
+            turn_error = extract_upstream_turn_error_from_chunk(lines[0])
+            self.assertIsNotNone(turn_error)
+            self.assertEqual(turn_error.error_code, "429")
+            self.assertEqual(turn_error.error_message, "quota exhausted")
+            self.assertTrue(upstream_response.closed)
+            self.assertEqual(_read_logged_entries(log_file), [])
 
     def test_request_upstream_or_error_returns_success_response_without_logging(self):
         with tempfile.TemporaryDirectory() as temp_dir:
