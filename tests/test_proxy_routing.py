@@ -14,7 +14,8 @@ from accio_panel.config import Settings
 from accio_panel.models import Account
 from accio_panel.mysql_storage import MySQLGateway
 from accio_panel.store import AccountStore
-from accio_panel.web import _ordered_proxy_candidates, _select_proxy_account, create_app
+from accio_panel.proxy_selection import _ordered_proxy_candidates, _select_proxy_account
+from accio_panel.web import create_app
 
 
 class _FakeSSEUpstreamResponse:
@@ -696,7 +697,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -782,7 +783,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -849,7 +850,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -935,7 +936,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -1025,7 +1026,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -1092,7 +1093,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -1162,7 +1163,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -1253,7 +1254,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -1340,7 +1341,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -1434,7 +1435,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -1622,7 +1623,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -1704,7 +1705,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -1728,7 +1729,7 @@ class ProxyRoutingTests(unittest.TestCase):
             )
 
             with patch(
-                "accio_panel.web.decode_gemini_generate_content_response",
+                "accio_panel.proxy_routes.context._decode_gemini_generate_content_response",
                 return_value={
                     "candidates": [
                         {
@@ -1794,7 +1795,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -1881,7 +1882,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -2086,7 +2087,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 return None
 
             with patch("accio_panel.web.AccioClient", return_value=fake_client):
-                with patch("accio_panel.web._is_allowed_dynamic_model", return_value=(True, [])):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
                     with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
                         app = create_app(settings)
 
@@ -2111,10 +2112,10 @@ class ProxyRoutingTests(unittest.TestCase):
             selected_account = app.state.store.get_account("acc-1")
             self.assertIsNotNone(selected_account)
             with patch(
-                "accio_panel.web._select_proxy_account",
+                "accio_panel.proxy_routes.context._select_proxy_account_impl",
                 return_value=(selected_account, {"success": True, "remaining_value": None}),
             ), patch(
-                "accio_panel.web.decode_gemini_generate_content_response",
+                "accio_panel.proxy_routes.context._decode_gemini_generate_content_response",
                 return_value={
                     "candidates": [
                         {

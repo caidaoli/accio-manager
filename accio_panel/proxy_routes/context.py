@@ -5,11 +5,31 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from .. import web as web_module
 from ..api_logs import ApiLogStore
 from ..app_settings import PanelSettingsStore
 from ..client import AccioClient
 from ..config import Settings
+from ..gemini_proxy import (
+    decode_gemini_generate_content_response as _decode_gemini_generate_content_response,
+)
+from ..model_catalog_cache import (
+    _is_allowed_dynamic_model as _is_allowed_dynamic_model_impl,
+)
+from ..proxy_selection import (
+    ProxySelectionError as _ProxySelectionError,
+    _anthropic_error_response as _anthropic_error_response_impl,
+    _authorize_proxy_request as _authorize_proxy_request_impl,
+    _disable_account_model_on_empty_response as _disable_account_model_on_empty_response_impl,
+    _empty_response_log_message as _empty_response_log_message_impl,
+    _extract_proxy_api_key as _extract_proxy_api_key_impl,
+    _gemini_error_response as _gemini_error_response_impl,
+    _iter_upstream_sse_bytes as _iter_upstream_sse_bytes_impl,
+    _mark_account_quota_exhausted_cooldown as _mark_account_quota_exhausted_cooldown_impl,
+    _native_error_response as _native_error_response_impl,
+    _openai_error_response as _openai_error_response_impl,
+    _select_proxy_account as _select_proxy_account_impl,
+    _should_disable_model_on_empty_response as _should_disable_model_on_empty_response_impl,
+)
 from ..store import AccountStore
 from ..usage_stats import UsageStatsStore
 
@@ -37,51 +57,47 @@ class ProxyRouteContext:
         )
 
     @property
-    def helpers(self):
-        return web_module
-
-    @property
     def ProxySelectionError(self):
-        return self.helpers.ProxySelectionError
+        return _ProxySelectionError
 
     def authorize_proxy_request(self, *args: Any, **kwargs: Any):
-        return self.helpers._authorize_proxy_request(*args, **kwargs)
+        return _authorize_proxy_request_impl(*args, **kwargs)
 
     def is_allowed_dynamic_model(self, *args: Any, **kwargs: Any):
-        return self.helpers._is_allowed_dynamic_model(*args, **kwargs)
+        return _is_allowed_dynamic_model_impl(*args, **kwargs)
 
     def select_proxy_account(self, *args: Any, **kwargs: Any):
-        return self.helpers._select_proxy_account(*args, **kwargs)
+        return _select_proxy_account_impl(*args, **kwargs)
 
     def empty_response_log_message(self, *args: Any, **kwargs: Any):
-        return self.helpers._empty_response_log_message(*args, **kwargs)
+        return _empty_response_log_message_impl(*args, **kwargs)
 
     def should_disable_model_on_empty_response(self, *args: Any, **kwargs: Any):
-        return self.helpers._should_disable_model_on_empty_response(*args, **kwargs)
+        return _should_disable_model_on_empty_response_impl(*args, **kwargs)
 
     def disable_account_model_on_empty_response(self, *args: Any, **kwargs: Any):
-        return self.helpers._disable_account_model_on_empty_response(*args, **kwargs)
+        return _disable_account_model_on_empty_response_impl(*args, **kwargs)
 
     def mark_account_quota_exhausted_cooldown(self, *args: Any, **kwargs: Any):
-        return self.helpers._mark_account_quota_exhausted_cooldown(*args, **kwargs)
+        return _mark_account_quota_exhausted_cooldown_impl(*args, **kwargs)
 
     def extract_proxy_api_key(self, *args: Any, **kwargs: Any):
-        return self.helpers._extract_proxy_api_key(*args, **kwargs)
+        return _extract_proxy_api_key_impl(*args, **kwargs)
 
     def iter_upstream_sse_bytes(self, *args: Any, **kwargs: Any):
-        return self.helpers._iter_upstream_sse_bytes(*args, **kwargs)
+        return _iter_upstream_sse_bytes_impl(*args, **kwargs)
 
     def gemini_error_response(self, *args: Any, **kwargs: Any):
-        return self.helpers._gemini_error_response(*args, **kwargs)
+        return _gemini_error_response_impl(*args, **kwargs)
 
     def decode_gemini_generate_content_response(self, *args: Any, **kwargs: Any):
-        return self.helpers.decode_gemini_generate_content_response(*args, **kwargs)
+        return _decode_gemini_generate_content_response(*args, **kwargs)
 
     def openai_error_response(self, *args: Any, **kwargs: Any):
-        return self.helpers._openai_error_response(*args, **kwargs)
+        return _openai_error_response_impl(*args, **kwargs)
 
     def anthropic_error_response(self, *args: Any, **kwargs: Any):
-        return self.helpers._anthropic_error_response(*args, **kwargs)
+        return _anthropic_error_response_impl(*args, **kwargs)
 
     def native_error_response(self, *args: Any, **kwargs: Any):
-        return self.helpers._native_error_response(*args, **kwargs)
+        return _native_error_response_impl(*args, **kwargs)
