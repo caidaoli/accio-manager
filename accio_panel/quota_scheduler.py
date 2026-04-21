@@ -10,7 +10,6 @@ from .models import Account
 from .proxy_selection import (
     _now_timestamp,
     _query_quota_with_refresh_fallback,
-    _try_recover_abnormal_account,
 )
 from .store import AccountStore
 
@@ -78,7 +77,7 @@ async def _quota_scheduler_loop(application: FastAPI) -> None:
 
         for account in abnormal_recovery_accounts:
             await asyncio.to_thread(
-                _try_recover_abnormal_account,
+                _query_quota_with_refresh_fallback,
                 store,
                 client,
                 account,

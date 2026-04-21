@@ -552,42 +552,6 @@ def _query_quota_with_refresh_fallback(
     return account, quota
 
 
-def _try_recover_abnormal_account(
-    store: AccountStore,
-    client: AccioClient,
-    account: Account,
-    panel_settings: PanelSettings,
-) -> tuple[Account, dict[str, Any]]:
-    """尝试恢复异常禁用的账号：先刷新 Token，再查询额度。"""
-    now_ts = _now_timestamp()
-
-    refresh_result = _refresh_token(client, account, panel_settings)
-    if not refresh_result.get("success"):
-        account.last_quota_check_at = now_ts
-        account.next_quota_check_at = now_ts + ABNORMAL_ACCOUNT_RECOVERY_INTERVAL_SECONDS
-        account.next_quota_check_reason = "异常禁用恢复检查失败，等待下次重试"
-        store.save(account)
-        return account, {"success": False, "message": "Token 刷新仍然失败"}
-
-    refreshed_data = refresh_result.get("data") or {}
-    updated_account = store.update_tokens(
-        account.id,
-        access_token=str(refreshed_data.get("accessToken") or account.access_token),
-        refresh_token=str(refreshed_data.get("refreshToken") or account.refresh_token),
-        expires_at=refreshed_data.get("expiresAt"),
-    )
-    if updated_account:
-        account = updated_account
-
-    account.manual_enabled = True
-    account.auto_disabled = False
-    account.auto_disabled_reason = None
-    store.save(account)
-
-    quota_result = _query_quota(client, account, panel_settings)
-    return _apply_quota_result(store, account, quota_result, panel_settings)
-
-
 def _check_proxy_candidate(
     store: AccountStore,
     client: AccioClient,
