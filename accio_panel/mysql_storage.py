@@ -19,6 +19,10 @@ from .store import BaseAccountStore
 _MYSQL_SCHEMES = {"mysql", "mysql+pymysql"}
 
 
+def _is_duplicate_column_error(exc: Exception) -> bool:
+    return bool(getattr(exc, "args", ()) and exc.args[0] == 1060)
+
+
 class MySQLGateway:
     def __init__(
         self,
@@ -144,6 +148,8 @@ class MySQLGateway:
                         auto_disabled BOOLEAN NOT NULL DEFAULT FALSE,
                         auto_disabled_reason TEXT NULL,
                         last_quota_check_at BIGINT NULL,
+                        last_remaining_quota BIGINT NULL,
+                        last_total_quota BIGINT NULL,
                         next_quota_check_at BIGINT NULL,
                         next_quota_check_reason TEXT NULL,
                         disabled_models LONGTEXT NULL,
@@ -152,16 +158,46 @@ class MySQLGateway:
                     ) DEFAULT CHARSET=utf8mb4
                     """
                 )
-                cursor.execute(
-                    "SHOW COLUMNS FROM accio_accounts LIKE 'disabled_models'"
+                self._add_column_if_missing(
+                    cursor,
+                    "disabled_models",
+                    """
+                    ALTER TABLE accio_accounts
+                    ADD COLUMN disabled_models LONGTEXT NULL
+                    """,
                 )
-                if cursor.fetchone() is None:
-                    cursor.execute(
-                        """
-                        ALTER TABLE accio_accounts
-                        ADD COLUMN disabled_models LONGTEXT NULL
-                        """
-                    )
+                self._add_column_if_missing(
+                    cursor,
+                    "last_remaining_quota",
+                    """
+                    ALTER TABLE accio_accounts
+                    ADD COLUMN last_remaining_quota BIGINT NULL
+                    """,
+                )
+                self._add_column_if_missing(
+                    cursor,
+                    "last_total_quota",
+                    """
+                    ALTER TABLE accio_accounts
+                    ADD COLUMN last_total_quota BIGINT NULL
+                    """,
+                )
+
+    def _add_column_if_missing(
+        self,
+        cursor: Any,
+        column_name: str,
+        ddl: str,
+    ) -> None:
+        cursor.execute(f"SHOW COLUMNS FROM accio_accounts LIKE '{column_name}'")
+        if cursor.fetchone() is not None:
+            return
+        try:
+            cursor.execute(ddl)
+        except Exception as exc:
+            if _is_duplicate_column_error(exc):
+                return
+            raise
 
     def fetch_panel_settings(self) -> dict[str, object] | None:
         with self._connect() as connection:
@@ -254,6 +290,8 @@ class MySQLGateway:
                         auto_disabled,
                         auto_disabled_reason,
                         last_quota_check_at,
+                        last_remaining_quota,
+                        last_total_quota,
                         next_quota_check_at,
                         next_quota_check_reason,
                         disabled_models,
@@ -285,12 +323,14 @@ class MySQLGateway:
                         auto_disabled,
                         auto_disabled_reason,
                         last_quota_check_at,
+                        last_remaining_quota,
+                        last_total_quota,
                         next_quota_check_at,
                         next_quota_check_reason,
                         disabled_models,
                         added_at,
                         updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                         name = VALUES(name),
                         access_token = VALUES(access_token),
@@ -303,6 +343,8 @@ class MySQLGateway:
                         auto_disabled = VALUES(auto_disabled),
                         auto_disabled_reason = VALUES(auto_disabled_reason),
                         last_quota_check_at = VALUES(last_quota_check_at),
+                        last_remaining_quota = VALUES(last_remaining_quota),
+                        last_total_quota = VALUES(last_total_quota),
                         next_quota_check_at = VALUES(next_quota_check_at),
                         next_quota_check_reason = VALUES(next_quota_check_reason),
                         disabled_models = VALUES(disabled_models),
@@ -322,6 +364,8 @@ class MySQLGateway:
                         bool(payload.get("autoDisabled", False)),
                         payload.get("autoDisabledReason"),
                         payload.get("lastQuotaCheckAt"),
+                        payload.get("lastRemainingQuota"),
+                        payload.get("lastTotalQuota"),
                         payload.get("nextQuotaCheckAt"),
                         payload.get("nextQuotaCheckReason"),
                         json.dumps(
@@ -401,13 +445,10 @@ class MySQLAccountStore(BaseAccountStore):
         return accounts
 
     def _read_all_unlocked(self) -> list[Account]:
-        if self._accounts_cache is not None:
-            return list(self._accounts_cache)
         return self._warm_cache()
 
     def _get_account_unlocked(self, account_id: str) -> Account | None:
-        if self._accounts_cache is None:
-            self._warm_cache()
+        self._warm_cache()
         return self._accounts_by_id.get(account_id)
 
     def _write_account_unlocked(self, account: Account) -> None:
@@ -499,6 +540,8 @@ def _account_row_to_payload(row: dict[str, Any]) -> dict[str, object]:
         "autoDisabled": bool(row.get("auto_disabled", False)),
         "autoDisabledReason": row.get("auto_disabled_reason"),
         "lastQuotaCheckAt": row.get("last_quota_check_at"),
+        "lastRemainingQuota": row.get("last_remaining_quota"),
+        "lastTotalQuota": row.get("last_total_quota"),
         "nextQuotaCheckAt": row.get("next_quota_check_at"),
         "nextQuotaCheckReason": row.get("next_quota_check_reason"),
         "disabledModels": disabled_models if isinstance(disabled_models, (dict, list)) else {},

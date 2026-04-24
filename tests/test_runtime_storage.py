@@ -8,7 +8,9 @@ from unittest.mock import patch
 from accio_panel.app_settings import PanelSettings, PanelSettingsStore
 from accio_panel.config import Settings
 from accio_panel.models import Account
+from accio_panel.mysql_storage import MySQLAccountStore
 from accio_panel.persistence import create_runtime_stores
+from accio_panel.proxy_selection import _ordered_proxy_candidates
 from accio_panel.store import AccountStore
 
 
@@ -240,6 +242,44 @@ class RuntimeStorageTests(unittest.TestCase):
             self.assertEqual(loaded_accounts[0].id, "db-acc")
             self.assertEqual(loaded_accounts[0].name, "数据库账号")
             self.assertEqual(loaded_settings.admin_password, "mysql-admin")
+
+    def test_mysql_account_store_reads_external_account_state_changes(self):
+        gateway = _FakeGateway()
+        gateway.accounts["acc-1"] = {
+            "id": "acc-1",
+            "name": "数据库账号",
+            "accessToken": "access-1",
+            "refreshToken": "refresh-1",
+            "utdid": "utdid-1",
+            "fillPriority": 100,
+            "expiresAt": None,
+            "cookie": None,
+            "manualEnabled": False,
+            "autoDisabled": False,
+            "autoDisabledReason": None,
+            "lastQuotaCheckAt": None,
+            "lastRemainingQuota": 20,
+            "lastTotalQuota": 20,
+            "nextQuotaCheckAt": None,
+            "nextQuotaCheckReason": None,
+            "disabledModels": {},
+            "addedAt": "2026-04-04 01:00:00",
+            "updatedAt": "2026-04-04 01:00:00",
+        }
+        store = MySQLAccountStore(gateway)
+
+        self.assertEqual(_ordered_proxy_candidates(store), [])
+
+        gateway.accounts["acc-1"] = {
+            **gateway.accounts["acc-1"],
+            "manualEnabled": True,
+            "updatedAt": "2026-04-04 01:01:00",
+        }
+
+        self.assertEqual(
+            [account.id for account in _ordered_proxy_candidates(store)],
+            ["acc-1"],
+        )
 
 
 if __name__ == "__main__":

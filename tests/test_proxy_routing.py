@@ -593,6 +593,8 @@ class ProxyRoutingTests(unittest.TestCase):
                     "auto_disabled": 0,
                     "auto_disabled_reason": None,
                     "last_quota_check_at": None,
+                    "last_remaining_quota": 17,
+                    "last_total_quota": 20,
                     "next_quota_check_at": None,
                     "next_quota_check_reason": None,
                     "disabled_models": json.dumps(
@@ -612,8 +614,12 @@ class ProxyRoutingTests(unittest.TestCase):
             accounts[0]["disabledModels"],
             {"claude-opus-4-6": disabled_reason},
         )
+        self.assertEqual(accounts[0]["lastRemainingQuota"], 17)
+        self.assertEqual(accounts[0]["lastTotalQuota"], 20)
         select_sql = row_cursor.executed[0][0].lower()
         self.assertIn("disabled_models", select_sql)
+        self.assertIn("last_remaining_quota", select_sql)
+        self.assertIn("last_total_quota", select_sql)
 
         write_cursor = _RecordingCursor()
         write_gateway = _RecordingGateway(write_cursor)
@@ -624,17 +630,23 @@ class ProxyRoutingTests(unittest.TestCase):
                 access_token="token-1",
                 refresh_token="refresh-1",
                 utdid="utdid-1",
+                last_remaining_quota=17,
+                last_total_quota=20,
                 disabled_models={"claude-opus-4-6": disabled_reason},
             ).to_dict()
         )
 
         insert_sql, params = write_cursor.executed[0]
         self.assertIn("disabled_models", insert_sql.lower())
+        self.assertIn("last_remaining_quota", insert_sql.lower())
+        self.assertIn("last_total_quota", insert_sql.lower())
         self.assertIsNotNone(params)
         self.assertIn(
             json.dumps({"claude-opus-4-6": disabled_reason}, ensure_ascii=False),
             params,
         )
+        self.assertIn(17, params)
+        self.assertIn(20, params)
 
     def test_select_proxy_account_can_exclude_current_account(self):
         with tempfile.TemporaryDirectory() as temp_dir:
