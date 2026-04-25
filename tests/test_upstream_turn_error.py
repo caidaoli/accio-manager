@@ -2,6 +2,7 @@ import json
 import unittest
 
 from accio_panel.anthropic_proxy import UpstreamTurnError, iter_anthropic_sse_events
+from accio_panel.gemini_proxy import decode_gemini_generate_content_response
 
 
 class _FakeSSEUpstreamResponse:
@@ -37,6 +38,23 @@ class UpstreamTurnErrorTests(unittest.TestCase):
 
         self.assertEqual(context.exception.error_code, "505")
         self.assertEqual(context.exception.error_message, "internal server error")
+
+    def test_decode_gemini_generate_content_response_raises_on_turn_complete_error(self):
+        response = _FakeSSEUpstreamResponse(
+            [
+                {
+                    "turn_complete": True,
+                    "error_code": "429",
+                    "error_message": "quota exhausted",
+                }
+            ]
+        )
+
+        with self.assertRaises(UpstreamTurnError) as context:
+            decode_gemini_generate_content_response(response, "gemini-2.5-pro")
+
+        self.assertEqual(context.exception.error_code, "429")
+        self.assertEqual(context.exception.error_message, "quota exhausted")
 
 
 if __name__ == "__main__":

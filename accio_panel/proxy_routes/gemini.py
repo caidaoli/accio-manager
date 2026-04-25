@@ -255,38 +255,57 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
 
             stream_account = account
             stream_quota = quota
-            try:
-                stream_bytes, has_meaningful_output = _build_stream_attempt(
-                    stream_account,
-                    stream_quota,
-                    upstream_response,
-                    request_id,
-                    1,
-                    attempt_started_at,
-                )
-            except UpstreamTurnError as exc:
-                _record_attempt(
-                    stream_account,
-                    stream_quota,
-                    request_id,
-                    attempt=1,
-                    stream=True,
-                    success=False,
-                    stop_reason="upstream_turn_error",
-                    message=_upstream_turn_error_message(exc),
-                    status_code=502,
-                    duration_ms=int((time.perf_counter() - attempt_started_at) * 1000),
-                    extra_fields={"errorCode": exc.error_code or None},
-                )
-                if not _should_retry_upstream_turn_error(exc):
-                    return _anthropic_error_response(
-                        502,
-                        _upstream_turn_error_message(exc),
+            stream_request_id = request_id
+            stream_response = upstream_response
+            stream_attempt = 1
+            stream_attempt_started_at = attempt_started_at
+            stream_retry_reason: str | None = None
+            excluded_account_ids = {stream_account.id}
+            while True:
+                retryable_turn_error = False
+                try:
+                    stream_bytes, has_meaningful_output = _build_stream_attempt(
+                        stream_account,
+                        stream_quota,
+                        stream_response,
+                        stream_request_id,
+                        stream_attempt,
+                        stream_attempt_started_at,
                     )
-                if _is_retryable_quota_exhausted_turn_error(exc):
-                    _mark_account_quota_exhausted_cooldown(store, stream_account)
-                has_meaningful_output = False
-            if not has_meaningful_output:
+                except UpstreamTurnError as exc:
+                    extra_fields = {"errorCode": exc.error_code or None}
+                    if stream_retry_reason:
+                        extra_fields["retryReason"] = stream_retry_reason
+                    _record_attempt(
+                        stream_account,
+                        stream_quota,
+                        stream_request_id,
+                        attempt=stream_attempt,
+                        stream=True,
+                        success=False,
+                        stop_reason="upstream_turn_error",
+                        message=_upstream_turn_error_message(exc),
+                        status_code=502,
+                        duration_ms=int(
+                            (time.perf_counter() - stream_attempt_started_at) * 1000
+                        ),
+                        extra_fields=extra_fields,
+                    )
+                    if not _should_retry_upstream_turn_error(exc):
+                        return _gemini_error_response(
+                            502,
+                            _upstream_turn_error_message(exc),
+                            error_status="UNAVAILABLE",
+                        )
+                    if _is_retryable_quota_exhausted_turn_error(exc):
+                        _mark_account_quota_exhausted_cooldown(store, stream_account)
+                    retryable_turn_error = True
+                    has_meaningful_output = False
+                if has_meaningful_output:
+                    break
+                if not retryable_turn_error and stream_attempt != 1:
+                    break
+
                 try:
                     retry_account, retry_quota = await asyncio.to_thread(
                         _select_proxy_account,
@@ -294,7 +313,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                         panel_settings,
                         normalized_model_name,
                         provider="gemini",
-                        exclude_account_ids={stream_account.id},
+                        exclude_account_ids=excluded_account_ids,
                     )
                 except ProxySelectionError as exc:
                     return _gemini_error_response(
@@ -320,7 +339,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                     account=retry_account,
                     quota=retry_quota,
                     request_id=retry_request_id,
-                    attempt=2,
+                    attempt=stream_attempt + 1,
                     stream=True,
                     started_at=retry_started_at,
                     record_attempt=_record_attempt,
@@ -337,38 +356,12 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
 
                 stream_account = retry_account
                 stream_quota = retry_quota
-                try:
-                    stream_bytes, _ = _build_stream_attempt(
-                        stream_account,
-                        stream_quota,
-                        retry_response,
-                        retry_request_id,
-                        2,
-                        retry_started_at,
-                    )
-                except UpstreamTurnError as exc:
-                    _record_attempt(
-                        stream_account,
-                        stream_quota,
-                        retry_request_id,
-                        attempt=2,
-                        stream=True,
-                        success=False,
-                        stop_reason="upstream_turn_error",
-                        message=_upstream_turn_error_message(exc),
-                        status_code=502,
-                        duration_ms=int((time.perf_counter() - retry_started_at) * 1000),
-                        extra_fields={
-                            "errorCode": exc.error_code or None,
-                            "retryReason": "upstream_turn_error_or_empty_response",
-                        },
-                    )
-                    if _is_retryable_quota_exhausted_turn_error(exc):
-                        _mark_account_quota_exhausted_cooldown(store, stream_account)
-                    return _anthropic_error_response(
-                        502,
-                        _upstream_turn_error_message(exc),
-                    )
+                stream_request_id = retry_request_id
+                stream_response = retry_response
+                stream_attempt += 1
+                stream_attempt_started_at = retry_started_at
+                stream_retry_reason = "upstream_turn_error_or_empty_response"
+                excluded_account_ids.add(stream_account.id)
 
             return StreamingResponse(
                 stream_bytes,
@@ -376,133 +369,185 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                 headers=_stream_headers(stream_account, stream_quota),
             )
 
-        try:
-            response_payload = await asyncio.to_thread(
-                _decode_gemini_generate_content_response,
-                upstream_response,
-                normalized_model_name,
-            )
-        except ValueError as exc:
-            usage_stats_store.record_message(
-                account_id=account.id,
-                model=normalized_model_name,
-                input_tokens=0,
-                output_tokens=0,
-                success=False,
-                stop_reason="decode_error",
-            )
-            _record_attempt(
-                account,
-                quota,
-                request_id,
-                attempt=1,
-                stream=False,
-                success=False,
-                stop_reason="decode_error",
-                message=str(exc),
-                status_code=502,
-                duration_ms=int((time.perf_counter() - attempt_started_at) * 1000),
-            )
-            api_log_store.record(
-                {
-                    "level": "error",
-                    "event": "gemini_generate_content",
-                    "success": False,
-                    "emptyResponse": False,
-                    "accountId": account.id,
-                    "accountName": account.name,
-                    "fillPriority": account.fill_priority,
-                    "model": normalized_model_name,
-                    "stream": False,
-                    "strategy": panel_settings.api_account_strategy,
-                    "requestId": request_id,
-                    "message": str(exc),
-                    "statusCode": 502,
-                    "stopReason": "decode_error",
-                    "inputTokens": 0,
-                    "outputTokens": 0,
-                    "remainingQuota": quota.get("remaining_value"),
-                    "usedQuota": quota.get("used_value"),
-                    "messagesCount": messages_count,
-                    "durationMs": int((time.perf_counter() - started_at) * 1000),
-                }
-            )
-            return _gemini_error_response(502, str(exc), error_status="UNAVAILABLE")
-
-        usage = extract_gemini_usage(response_payload)
-        output_summary = summarize_gemini_response(response_payload)
+        excluded_account_ids = {account.id}
+        current_response = upstream_response
         current_attempt = 1
         current_attempt_started_at = attempt_started_at
-        if output_summary["empty_response"]:
-            _disable_account_model_on_empty_response(
-                store,
-                account,
-                normalized_model_name,
-                provider="gemini",
-            )
-            finish_reason = extract_gemini_finish_reason(response_payload)
-            _record_attempt(
-                account,
-                quota,
-                request_id,
-                attempt=1,
-                stream=False,
-                success=False,
-                stop_reason="empty_response",
-                message=_empty_response_log_message(
+        current_retry_reason: str | None = None
+
+        while True:
+            try:
+                response_payload = await asyncio.to_thread(
+                    _decode_gemini_generate_content_response,
+                    current_response,
                     normalized_model_name,
-                    disable_model=True,
-                ),
-                status_code=200,
-                input_tokens=int(usage["input_tokens"]),
-                output_tokens=int(usage["output_tokens"]),
-                empty_response=True,
-                duration_ms=int((time.perf_counter() - attempt_started_at) * 1000),
-                level="warn",
-                extra_fields={
-                    "textChars": int(output_summary["text_chars"]),
-                    "toolUseBlocks": int(output_summary["tool_use_blocks"]),
-                    "imageBlocks": int(output_summary["image_blocks"]),
-                },
-            )
-            usage_stats_store.record_message(
-                account_id=account.id,
-                model=normalized_model_name,
-                input_tokens=int(usage["input_tokens"]),
-                output_tokens=int(usage["output_tokens"]),
-                success=True,
-                stop_reason=finish_reason,
-            )
-            api_log_store.record(
-                {
-                    "level": "warn",
-                    "event": "gemini_generate_content",
-                    "success": True,
-                    "emptyResponse": True,
-                    "accountId": account.id,
-                    "accountName": account.name,
-                    "fillPriority": account.fill_priority,
-                    "model": normalized_model_name,
-                    "stream": False,
-                    "strategy": panel_settings.api_account_strategy,
-                    "requestId": request_id,
-                    "message": _empty_response_log_message(
+                )
+            except UpstreamTurnError as exc:
+                extra_fields = {"errorCode": exc.error_code or None}
+                if current_retry_reason:
+                    extra_fields["retryReason"] = current_retry_reason
+                _record_attempt(
+                    account,
+                    quota,
+                    request_id,
+                    attempt=current_attempt,
+                    stream=False,
+                    success=False,
+                    stop_reason="upstream_turn_error",
+                    message=_upstream_turn_error_message(exc),
+                    status_code=502,
+                    duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
+                    extra_fields=extra_fields,
+                )
+                if not _should_retry_upstream_turn_error(exc):
+                    return _gemini_error_response(
+                        502,
+                        _upstream_turn_error_message(exc),
+                        error_status="UNAVAILABLE",
+                    )
+                if _is_retryable_quota_exhausted_turn_error(exc):
+                    _mark_account_quota_exhausted_cooldown(store, account)
+                next_retry_reason = "upstream_turn_error"
+            except ValueError as exc:
+                usage_stats_store.record_message(
+                    account_id=account.id,
+                    model=normalized_model_name,
+                    input_tokens=0,
+                    output_tokens=0,
+                    success=False,
+                    stop_reason="decode_error",
+                )
+                extra_fields = (
+                    {"retryReason": current_retry_reason}
+                    if current_retry_reason
+                    else None
+                )
+                _record_attempt(
+                    account,
+                    quota,
+                    request_id,
+                    attempt=current_attempt,
+                    stream=False,
+                    success=False,
+                    stop_reason="decode_error",
+                    message=str(exc),
+                    status_code=502,
+                    duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
+                    extra_fields=extra_fields,
+                )
+                api_log_store.record(
+                    {
+                        "level": "error",
+                        "event": "gemini_generate_content",
+                        "success": False,
+                        "emptyResponse": False,
+                        "accountId": account.id,
+                        "accountName": account.name,
+                        "fillPriority": account.fill_priority,
+                        "model": normalized_model_name,
+                        "stream": False,
+                        "strategy": panel_settings.api_account_strategy,
+                        "requestId": request_id,
+                        "message": str(exc),
+                        "statusCode": 502,
+                        "stopReason": "decode_error",
+                        "inputTokens": 0,
+                        "outputTokens": 0,
+                        "remainingQuota": quota.get("remaining_value"),
+                        "usedQuota": quota.get("used_value"),
+                        "messagesCount": messages_count,
+                        "durationMs": int((time.perf_counter() - started_at) * 1000),
+                    }
+                )
+                return _gemini_error_response(
+                    502,
+                    str(exc),
+                    error_status="UNAVAILABLE",
+                )
+            else:
+                usage = extract_gemini_usage(response_payload)
+                output_summary = summarize_gemini_response(response_payload)
+                if not output_summary["empty_response"]:
+                    break
+                if current_attempt != 1:
+                    _disable_account_model_on_empty_response(
+                        store,
+                        account,
+                        normalized_model_name,
+                        provider="gemini",
+                    )
+                    break
+                _disable_account_model_on_empty_response(
+                    store,
+                    account,
+                    normalized_model_name,
+                    provider="gemini",
+                )
+                finish_reason = extract_gemini_finish_reason(response_payload)
+                _record_attempt(
+                    account,
+                    quota,
+                    request_id,
+                    attempt=current_attempt,
+                    stream=False,
+                    success=False,
+                    stop_reason="empty_response",
+                    message=_empty_response_log_message(
                         normalized_model_name,
                         disable_model=True,
                     ),
-                    "statusCode": 200,
-                    "stopReason": finish_reason,
-                    "inputTokens": int(usage["input_tokens"]),
-                    "outputTokens": int(usage["output_tokens"]),
-                    "remainingQuota": quota.get("remaining_value"),
-                    "usedQuota": quota.get("used_value"),
-                    "messagesCount": messages_count,
-                    "textChars": int(output_summary["text_chars"]),
-                    "toolUseBlocks": int(output_summary["tool_use_blocks"]),
-                    "imageBlocks": int(output_summary["image_blocks"]),
-                    "durationMs": int((time.perf_counter() - started_at) * 1000),
-                }
-            )
+                    status_code=200,
+                    input_tokens=int(usage["input_tokens"]),
+                    output_tokens=int(usage["output_tokens"]),
+                    empty_response=True,
+                    duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
+                    level="warn",
+                    extra_fields={
+                        "textChars": int(output_summary["text_chars"]),
+                        "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                        "imageBlocks": int(output_summary["image_blocks"]),
+                    },
+                )
+                usage_stats_store.record_message(
+                    account_id=account.id,
+                    model=normalized_model_name,
+                    input_tokens=int(usage["input_tokens"]),
+                    output_tokens=int(usage["output_tokens"]),
+                    success=True,
+                    stop_reason=finish_reason,
+                )
+                api_log_store.record(
+                    {
+                        "level": "warn",
+                        "event": "gemini_generate_content",
+                        "success": True,
+                        "emptyResponse": True,
+                        "accountId": account.id,
+                        "accountName": account.name,
+                        "fillPriority": account.fill_priority,
+                        "model": normalized_model_name,
+                        "stream": False,
+                        "strategy": panel_settings.api_account_strategy,
+                        "requestId": request_id,
+                        "message": _empty_response_log_message(
+                            normalized_model_name,
+                            disable_model=True,
+                        ),
+                        "statusCode": 200,
+                        "stopReason": finish_reason,
+                        "inputTokens": int(usage["input_tokens"]),
+                        "outputTokens": int(usage["output_tokens"]),
+                        "remainingQuota": quota.get("remaining_value"),
+                        "usedQuota": quota.get("used_value"),
+                        "messagesCount": messages_count,
+                        "textChars": int(output_summary["text_chars"]),
+                        "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                        "imageBlocks": int(output_summary["image_blocks"]),
+                        "durationMs": int((time.perf_counter() - started_at) * 1000),
+                    }
+                )
+                next_retry_reason = "empty_response"
+
             try:
                 retry_account, retry_quota = await asyncio.to_thread(
                     _select_proxy_account,
@@ -510,7 +555,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                     panel_settings,
                     normalized_model_name,
                     provider="gemini",
-                    exclude_account_ids={account.id},
+                    exclude_account_ids=excluded_account_ids,
                 )
             except ProxySelectionError as exc:
                 return _gemini_error_response(
@@ -536,7 +581,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                 account=retry_account,
                 quota=retry_quota,
                 request_id=retry_request_id,
-                attempt=2,
+                attempt=current_attempt + 1,
                 stream=False,
                 started_at=retry_started_at,
                 record_attempt=_record_attempt,
@@ -546,7 +591,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                     retry_request_id,
                     stream=False,
                 ),
-                retry_reason="empty_response",
+                retry_reason=next_retry_reason,
             )
             if isinstance(retry_response, Response):
                 return retry_response
@@ -554,42 +599,12 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
             account = retry_account
             quota = retry_quota
             request_id = retry_request_id
-            current_attempt = 2
+            excluded_account_ids.add(account.id)
+            current_response = retry_response
+            current_attempt += 1
             current_attempt_started_at = retry_started_at
-            try:
-                response_payload = await asyncio.to_thread(
-                    _decode_gemini_generate_content_response,
-                    retry_response,
-                    normalized_model_name,
-                )
-            except ValueError as exc:
-                _record_attempt(
-                    account,
-                    quota,
-                    request_id,
-                    attempt=2,
-                    stream=False,
-                    success=False,
-                    stop_reason="decode_error",
-                    message=str(exc),
-                    status_code=502,
-                    duration_ms=int((time.perf_counter() - retry_started_at) * 1000),
-                    extra_fields={"retryReason": "empty_response"},
-                )
-                return _gemini_error_response(
-                    502,
-                    str(exc),
-                    error_status="UNAVAILABLE",
-                )
-            usage = extract_gemini_usage(response_payload)
-            output_summary = summarize_gemini_response(response_payload)
-            if output_summary["empty_response"]:
-                _disable_account_model_on_empty_response(
-                    store,
-                    account,
-                    normalized_model_name,
-                    provider="gemini",
-                )
+            current_retry_reason = next_retry_reason
+
         finish_reason = extract_gemini_finish_reason(response_payload)
         _record_attempt(
             account,
@@ -777,35 +792,68 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
 
         stream_account = account
         stream_quota = quota
+        stream_request_id = request_id
         stream_response = upstream_response
-        prefetched_chunks, remaining_chunks, _ = _prefetch_stream_until_meaningful(
-            _iter_upstream_sse_bytes(upstream_response),
-            chunk_has_meaningful_output=_native_sse_chunk_has_meaningful_output,
-        )
-        turn_error = next(
-            (
-                error
-                for error in (
-                    _extract_upstream_turn_error_from_chunk(chunk)
-                    for chunk in prefetched_chunks
+        stream_attempt = 1
+        stream_attempt_started_at = attempt_started_at
+        stream_retry_reason: str | None = None
+        excluded_account_ids = {stream_account.id}
+        while True:
+            prefetched_chunks, remaining_chunks, _ = _prefetch_stream_until_meaningful(
+                _iter_upstream_sse_bytes(stream_response),
+                chunk_has_meaningful_output=_native_sse_chunk_has_meaningful_output,
+            )
+            turn_error = next(
+                (
+                    error
+                    for error in (
+                        _extract_upstream_turn_error_from_chunk(chunk)
+                        for chunk in prefetched_chunks
+                    )
+                    if error is not None
+                ),
+                None,
+            )
+            if turn_error is None:
+                extra_fields = (
+                    {"retryReason": stream_retry_reason}
+                    if stream_retry_reason
+                    else None
                 )
-                if error is not None
-            ),
-            None,
-        )
-        if turn_error is not None:
+                _record_attempt(
+                    stream_account,
+                    stream_quota,
+                    stream_request_id,
+                    attempt=stream_attempt,
+                    success=True,
+                    stream=True,
+                    stop_reason="upstream_request_completed",
+                    message="原生 Gemini 上游请求完成",
+                    status_code=200,
+                    duration_ms=int(
+                        (time.perf_counter() - stream_attempt_started_at) * 1000
+                    ),
+                    extra_fields=extra_fields,
+                )
+                break
+
+            extra_fields = {"errorCode": turn_error.error_code or None}
+            if stream_retry_reason:
+                extra_fields["retryReason"] = stream_retry_reason
             _record_attempt(
-                account,
-                quota,
-                request_id,
-                attempt=1,
+                stream_account,
+                stream_quota,
+                stream_request_id,
+                attempt=stream_attempt,
                 success=False,
                 stream=True,
                 stop_reason="upstream_turn_error",
                 message=_upstream_turn_error_message(turn_error),
                 status_code=502,
-                duration_ms=int((time.perf_counter() - attempt_started_at) * 1000),
-                extra_fields={"errorCode": turn_error.error_code or None},
+                duration_ms=int(
+                    (time.perf_counter() - stream_attempt_started_at) * 1000
+                ),
+                extra_fields=extra_fields,
             )
             if not _should_retry_upstream_turn_error(turn_error):
                 return _native_error_response(
@@ -813,14 +861,15 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                     _upstream_turn_error_message(turn_error),
                 )
             if _is_retryable_quota_exhausted_turn_error(turn_error):
-                _mark_account_quota_exhausted_cooldown(store, account)
+                _mark_account_quota_exhausted_cooldown(store, stream_account)
+
             try:
                 retry_account, retry_quota = await asyncio.to_thread(
                     _select_proxy_account,
                     application,
                     panel_settings,
                     model,
-                    exclude_account_ids={account.id},
+                    exclude_account_ids=excluded_account_ids,
                 )
             except ProxySelectionError as exc:
                 return _native_error_response(exc.status_code, exc.message)
@@ -841,7 +890,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                 account=retry_account,
                 quota=retry_quota,
                 request_id=retry_request_id,
-                attempt=2,
+                attempt=stream_attempt + 1,
                 stream=True,
                 started_at=retry_started_at,
                 record_attempt=_record_attempt,
@@ -853,71 +902,12 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
 
             stream_account = retry_account
             stream_quota = retry_quota
+            stream_request_id = retry_request_id
             stream_response = retry_response
-            prefetched_chunks, remaining_chunks, _ = _prefetch_stream_until_meaningful(
-                _iter_upstream_sse_bytes(retry_response),
-                chunk_has_meaningful_output=_native_sse_chunk_has_meaningful_output,
-            )
-            retry_turn_error = next(
-                (
-                    error
-                    for error in (
-                        _extract_upstream_turn_error_from_chunk(chunk)
-                        for chunk in prefetched_chunks
-                    )
-                    if error is not None
-                ),
-                None,
-            )
-            if retry_turn_error is not None:
-                _record_attempt(
-                    stream_account,
-                    stream_quota,
-                    retry_request_id,
-                    attempt=2,
-                    success=False,
-                    stream=True,
-                    stop_reason="upstream_turn_error",
-                    message=_upstream_turn_error_message(retry_turn_error),
-                    status_code=502,
-                    duration_ms=int((time.perf_counter() - retry_started_at) * 1000),
-                    extra_fields={
-                        "errorCode": retry_turn_error.error_code or None,
-                        "retryReason": "upstream_turn_error",
-                    },
-                )
-                if _is_retryable_quota_exhausted_turn_error(retry_turn_error):
-                    _mark_account_quota_exhausted_cooldown(store, stream_account)
-                return _native_error_response(
-                    502,
-                    _upstream_turn_error_message(retry_turn_error),
-                )
-            _record_attempt(
-                stream_account,
-                stream_quota,
-                retry_request_id,
-                attempt=2,
-                success=True,
-                stream=True,
-                stop_reason="upstream_request_completed",
-                message="原生 Gemini 上游请求完成",
-                status_code=200,
-                duration_ms=int((time.perf_counter() - retry_started_at) * 1000),
-                extra_fields={"retryReason": "upstream_turn_error"},
-            )
-        else:
-            _record_attempt(
-                stream_account,
-                stream_quota,
-                request_id,
-                attempt=1,
-                success=True,
-                stream=True,
-                stop_reason="upstream_request_completed",
-                message="原生 Gemini 上游请求完成",
-                status_code=200,
-                duration_ms=int((time.perf_counter() - attempt_started_at) * 1000),
-            )
+            stream_attempt += 1
+            stream_attempt_started_at = retry_started_at
+            stream_retry_reason = "upstream_turn_error"
+            excluded_account_ids.add(stream_account.id)
 
         response_headers = {
             "x-accio-account-id": stream_account.id,

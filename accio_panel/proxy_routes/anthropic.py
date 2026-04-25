@@ -256,45 +256,63 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
 
             stream_account = account
             stream_quota = quota
-            try:
-                stream_bytes, has_meaningful_output = _build_stream_attempt(
-                    stream_account,
-                    stream_quota,
-                    upstream_response,
-                    request_id,
-                    1,
-                    attempt_started_at,
-                )
-            except UpstreamTurnError as exc:
-                _record_attempt(
-                    stream_account,
-                    stream_quota,
-                    request_id,
-                    attempt=1,
-                    stream=True,
-                    success=False,
-                    stop_reason="upstream_turn_error",
-                    message=_upstream_turn_error_message(exc),
-                    status_code=502,
-                    duration_ms=int((time.perf_counter() - attempt_started_at) * 1000),
-                    extra_fields={"errorCode": exc.error_code or None},
-                )
-                if not _should_retry_upstream_turn_error(exc):
-                    return _anthropic_error_response(
-                        502,
-                        _upstream_turn_error_message(exc),
+            stream_request_id = request_id
+            stream_response = upstream_response
+            stream_attempt = 1
+            stream_attempt_started_at = attempt_started_at
+            stream_retry_reason: str | None = None
+            excluded_account_ids = {stream_account.id}
+            while True:
+                retryable_turn_error = False
+                try:
+                    stream_bytes, has_meaningful_output = _build_stream_attempt(
+                        stream_account,
+                        stream_quota,
+                        stream_response,
+                        stream_request_id,
+                        stream_attempt,
+                        stream_attempt_started_at,
                     )
-                if _is_retryable_quota_exhausted_turn_error(exc):
-                    _mark_account_quota_exhausted_cooldown(store, stream_account)
-                has_meaningful_output = False
-            if not has_meaningful_output:
+                except UpstreamTurnError as exc:
+                    extra_fields = {"errorCode": exc.error_code or None}
+                    if stream_retry_reason:
+                        extra_fields["retryReason"] = stream_retry_reason
+                    _record_attempt(
+                        stream_account,
+                        stream_quota,
+                        stream_request_id,
+                        attempt=stream_attempt,
+                        stream=True,
+                        success=False,
+                        stop_reason="upstream_turn_error",
+                        message=_upstream_turn_error_message(exc),
+                        status_code=502,
+                        duration_ms=int(
+                            (time.perf_counter() - stream_attempt_started_at) * 1000
+                        ),
+                        extra_fields=extra_fields,
+                    )
+                    if not _should_retry_upstream_turn_error(exc):
+                        return _anthropic_error_response(
+                            502,
+                            _upstream_turn_error_message(exc),
+                        )
+                    if _is_retryable_quota_exhausted_turn_error(exc):
+                        _mark_account_quota_exhausted_cooldown(store, stream_account)
+                    retryable_turn_error = True
+                    has_meaningful_output = False
+                if has_meaningful_output:
+                    break
+                if not retryable_turn_error and stream_attempt != 1:
+                    break
+
                 try:
                     retry_account, retry_quota = await asyncio.to_thread(
                         _select_proxy_account,
                         application,
                         panel_settings,
                         model,
-                        exclude_account_ids={stream_account.id},
+                        exclude_account_ids=excluded_account_ids,
                     )
                 except ProxySelectionError as exc:
                     return _anthropic_error_response(exc.status_code, exc.message)
@@ -317,7 +335,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                     account=retry_account,
                     quota=retry_quota,
                     request_id=retry_request_id,
-                    attempt=2,
+                    attempt=stream_attempt + 1,
                     stream=True,
                     started_at=retry_started_at,
                     record_attempt=_record_attempt,
@@ -334,38 +352,12 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
 
                 stream_account = retry_account
                 stream_quota = retry_quota
-                try:
-                    stream_bytes, _ = _build_stream_attempt(
-                        stream_account,
-                        stream_quota,
-                        retry_response,
-                        retry_request_id,
-                        2,
-                        retry_started_at,
-                    )
-                except UpstreamTurnError as exc:
-                    _record_attempt(
-                        stream_account,
-                        stream_quota,
-                        retry_request_id,
-                        attempt=2,
-                        stream=True,
-                        success=False,
-                        stop_reason="upstream_turn_error",
-                        message=_upstream_turn_error_message(exc),
-                        status_code=502,
-                        duration_ms=int((time.perf_counter() - retry_started_at) * 1000),
-                        extra_fields={
-                            "errorCode": exc.error_code or None,
-                            "retryReason": "upstream_turn_error_or_empty_response",
-                        },
-                    )
-                    if _is_retryable_quota_exhausted_turn_error(exc):
-                        _mark_account_quota_exhausted_cooldown(store, stream_account)
-                    return _anthropic_error_response(
-                        502,
-                        _upstream_turn_error_message(exc),
-                    )
+                stream_request_id = retry_request_id
+                stream_response = retry_response
+                stream_attempt += 1
+                stream_attempt_started_at = retry_started_at
+                stream_retry_reason = "upstream_turn_error_or_empty_response"
+                excluded_account_ids.add(stream_account.id)
 
             return StreamingResponse(
                 stream_bytes,
@@ -373,47 +365,59 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                 headers=_stream_headers(stream_account, stream_quota),
             )
 
-        should_retry = False
-        retry_due_to_upstream_turn_error = False
+        excluded_account_ids = {account.id}
+        current_response = upstream_response
         current_attempt = 1
         current_attempt_started_at = attempt_started_at
-        try:
-            response_payload = await asyncio.to_thread(
-                decode_non_stream_response,
-                upstream_response,
-                model,
-            )
-        except UpstreamTurnError as exc:
-            _record_attempt(
-                account,
-                quota,
-                request_id,
-                attempt=1,
-                stream=False,
-                success=False,
-                stop_reason="upstream_turn_error",
-                message=_upstream_turn_error_message(exc),
-                status_code=502,
-                duration_ms=int((time.perf_counter() - attempt_started_at) * 1000),
-                extra_fields={"errorCode": exc.error_code or None},
-            )
-            if not _should_retry_upstream_turn_error(exc):
-                return _anthropic_error_response(
-                    502,
-                    _upstream_turn_error_message(exc),
+        current_retry_reason: str | None = None
+
+        while True:
+            try:
+                response_payload = await asyncio.to_thread(
+                    decode_non_stream_response,
+                    current_response,
+                    model,
                 )
-            if _is_retryable_quota_exhausted_turn_error(exc):
-                _mark_account_quota_exhausted_cooldown(store, account)
-            should_retry = True
-            retry_due_to_upstream_turn_error = True
-        else:
-            usage = response_payload.get("usage") if isinstance(response_payload, dict) else {}
-            if not isinstance(usage, dict):
-                usage = {}
-            output_summary = _summarize_non_stream_payload(response_payload)
-            should_retry = bool(output_summary["empty_response"])
-        if should_retry:
-            if not retry_due_to_upstream_turn_error:
+            except UpstreamTurnError as exc:
+                extra_fields = {"errorCode": exc.error_code or None}
+                if current_retry_reason:
+                    extra_fields["retryReason"] = current_retry_reason
+                _record_attempt(
+                    account,
+                    quota,
+                    request_id,
+                    attempt=current_attempt,
+                    stream=False,
+                    success=False,
+                    stop_reason="upstream_turn_error",
+                    message=_upstream_turn_error_message(exc),
+                    status_code=502,
+                    duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
+                    extra_fields=extra_fields,
+                )
+                if not _should_retry_upstream_turn_error(exc):
+                    return _anthropic_error_response(
+                        502,
+                        _upstream_turn_error_message(exc),
+                    )
+                if _is_retryable_quota_exhausted_turn_error(exc):
+                    _mark_account_quota_exhausted_cooldown(store, account)
+                next_retry_reason = "upstream_turn_error"
+            else:
+                usage = response_payload.get("usage") if isinstance(response_payload, dict) else {}
+                if not isinstance(usage, dict):
+                    usage = {}
+                output_summary = _summarize_non_stream_payload(response_payload)
+                if not output_summary["empty_response"]:
+                    break
+                if current_attempt != 1:
+                    if disable_on_empty_response:
+                        _disable_account_model_on_empty_response(
+                            store,
+                            account,
+                            model,
+                        )
+                    break
                 if disable_on_empty_response:
                     _disable_account_model_on_empty_response(
                         store,
@@ -434,7 +438,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                     account,
                     quota,
                     request_id,
-                    attempt=1,
+                    attempt=current_attempt,
                     stream=False,
                     success=False,
                     stop_reason="empty_response",
@@ -446,7 +450,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                     input_tokens=int(usage.get("input_tokens") or 0),
                     output_tokens=int(usage.get("output_tokens") or 0),
                     empty_response=True,
-                    duration_ms=int((time.perf_counter() - attempt_started_at) * 1000),
+                    duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
                     level="warn",
                     extra_fields={
                         "cacheCreationInputTokens": int(
@@ -491,13 +495,15 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                         "durationMs": int((time.perf_counter() - started_at) * 1000),
                     }
                 )
+                next_retry_reason = "empty_response"
+
             try:
                 retry_account, retry_quota = await asyncio.to_thread(
                     _select_proxy_account,
                     application,
                     panel_settings,
                     model,
-                    exclude_account_ids={account.id},
+                    exclude_account_ids=excluded_account_ids,
                 )
             except ProxySelectionError as exc:
                 return _anthropic_error_response(exc.status_code, exc.message)
@@ -520,7 +526,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                 account=retry_account,
                 quota=retry_quota,
                 request_id=retry_request_id,
-                attempt=2,
+                attempt=current_attempt + 1,
                 stream=False,
                 started_at=retry_started_at,
                 record_attempt=_record_attempt,
@@ -530,11 +536,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                     retry_request_id,
                     stream=False,
                 ),
-                retry_reason=(
-                    "upstream_turn_error"
-                    if retry_due_to_upstream_turn_error
-                    else "empty_response"
-                ),
+                retry_reason=next_retry_reason,
             )
             if isinstance(retry_response, Response):
                 return retry_response
@@ -542,55 +544,11 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
             account = retry_account
             quota = retry_quota
             request_id = retry_request_id
-            current_attempt = 2
+            excluded_account_ids.add(account.id)
+            current_response = retry_response
+            current_attempt += 1
             current_attempt_started_at = retry_started_at
-            try:
-                response_payload = await asyncio.to_thread(
-                    decode_non_stream_response,
-                    retry_response,
-                    model,
-                )
-            except UpstreamTurnError as exc:
-                _record_attempt(
-                    account,
-                    quota,
-                    request_id,
-                    attempt=2,
-                    stream=False,
-                    success=False,
-                    stop_reason="upstream_turn_error",
-                    message=_upstream_turn_error_message(exc),
-                    status_code=502,
-                    duration_ms=int((time.perf_counter() - retry_started_at) * 1000),
-                    extra_fields={
-                        "errorCode": exc.error_code or None,
-                        "retryReason": (
-                            "upstream_turn_error"
-                            if retry_due_to_upstream_turn_error
-                            else "empty_response"
-                        ),
-                    },
-                )
-                if _is_retryable_quota_exhausted_turn_error(exc):
-                    _mark_account_quota_exhausted_cooldown(store, account)
-                return _anthropic_error_response(
-                    502,
-                    _upstream_turn_error_message(exc),
-                )
-            usage = (
-                response_payload.get("usage")
-                if isinstance(response_payload, dict)
-                else {}
-            )
-            if not isinstance(usage, dict):
-                usage = {}
-            output_summary = _summarize_non_stream_payload(response_payload)
-            if output_summary["empty_response"] and disable_on_empty_response:
-                _disable_account_model_on_empty_response(
-                    store,
-                    account,
-                    model,
-                )
+            current_retry_reason = next_retry_reason
 
         _record_attempt(
             account,
@@ -627,15 +585,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                 ),
                 "textChars": int(output_summary["text_chars"] or 0),
                 "toolUseBlocks": int(output_summary["tool_use_blocks"] or 0),
-                "retryReason": (
-                    None
-                    if current_attempt == 1
-                    else (
-                        "upstream_turn_error"
-                        if retry_due_to_upstream_turn_error
-                        else "empty_response"
-                    )
-                ),
+                "retryReason": None if current_attempt == 1 else current_retry_reason,
             },
         )
         response_headers = {

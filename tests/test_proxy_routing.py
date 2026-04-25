@@ -192,6 +192,29 @@ def _text_claude_stream(text: str) -> _FakeSSEUpstreamResponse:
     )
 
 
+def _gemini_text_response(text: str) -> _FakeSSEUpstreamResponse:
+    return _FakeSSEUpstreamResponse(
+        [
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "role": "model",
+                            "parts": [{"text": text}],
+                        },
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 1,
+                    "candidatesTokenCount": len(text),
+                    "totalTokenCount": len(text) + 1,
+                },
+            }
+        ]
+    )
+
+
 def _upstream_turn_error_stream(
     code: str = "505",
     message: str = "internal server error",
@@ -1526,6 +1549,395 @@ class ProxyRoutingTests(unittest.TestCase):
                 "quota exhausted",
                 str(exhausted_account.auto_disabled_reason or "").lower(),
             )
+
+    def test_retryable_quota_exhausted_walks_accounts_until_one_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_quota_exhausted_http_error_response()],
+                    "acc-2": [_quota_exhausted_http_error_response()],
+                    "acc-3": [_text_claude_stream("第三个账号命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            for index in range(1, 4):
+                store.save(
+                    Account(
+                        id=f"acc-{index}",
+                        name=f"账号{index}",
+                        access_token=f"token-{index}",
+                        refresh_token=f"refresh-{index}",
+                        utdid=f"utdid-{index}",
+                        fill_priority=index,
+                    )
+                )
+
+            response, response_text = asyncio.run(
+                _invoke_anthropic_messages_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 256,
+                        "stream": False,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-accio-account-id"], "acc-3")
+            self.assertIn("第三个账号命中", response_text)
+            self.assertEqual(fake_client.calls, ["acc-1", "acc-2", "acc-3"])
+
+            for exhausted_id in ("acc-1", "acc-2"):
+                exhausted_account = store.get_account(exhausted_id)
+                self.assertIsNotNone(exhausted_account)
+                self.assertTrue(exhausted_account.auto_disabled)
+                self.assertEqual(
+                    exhausted_account.next_quota_check_reason,
+                    "上游 quota exhausted 后自动恢复重试",
+                )
+
+    def test_openai_stream_quota_exhausted_walks_accounts_until_one_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_quota_exhausted_http_error_response()],
+                    "acc-2": [_quota_exhausted_http_error_response()],
+                    "acc-3": [_text_claude_stream("第三个账号命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            for index in range(1, 4):
+                store.save(
+                    Account(
+                        id=f"acc-{index}",
+                        name=f"账号{index}",
+                        access_token=f"token-{index}",
+                        refresh_token=f"refresh-{index}",
+                        utdid=f"utdid-{index}",
+                        fill_priority=index,
+                    )
+                )
+
+            response, response_text = asyncio.run(
+                _invoke_openai_chat_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "stream": True,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-accio-account-id"], "acc-3")
+            self.assertIn("第三个账号命中", response_text)
+            self.assertEqual(fake_client.calls, ["acc-1", "acc-2", "acc-3"])
+
+            for exhausted_id in ("acc-1", "acc-2"):
+                exhausted_account = store.get_account(exhausted_id)
+                self.assertIsNotNone(exhausted_account)
+                self.assertTrue(exhausted_account.auto_disabled)
+                self.assertEqual(
+                    exhausted_account.next_quota_check_reason,
+                    "上游 quota exhausted 后自动恢复重试",
+                )
+
+    def test_openai_non_stream_quota_exhausted_walks_accounts_until_one_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_quota_exhausted_http_error_response()],
+                    "acc-2": [_quota_exhausted_http_error_response()],
+                    "acc-3": [_text_claude_stream("第三个账号命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            for index in range(1, 4):
+                store.save(
+                    Account(
+                        id=f"acc-{index}",
+                        name=f"账号{index}",
+                        access_token=f"token-{index}",
+                        refresh_token=f"refresh-{index}",
+                        utdid=f"utdid-{index}",
+                        fill_priority=index,
+                    )
+                )
+
+            response, response_text = asyncio.run(
+                _invoke_openai_chat_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "stream": False,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-accio-account-id"], "acc-3")
+            self.assertIn("第三个账号命中", response_text)
+            self.assertEqual(fake_client.calls, ["acc-1", "acc-2", "acc-3"])
+
+            for exhausted_id in ("acc-1", "acc-2"):
+                exhausted_account = store.get_account(exhausted_id)
+                self.assertIsNotNone(exhausted_account)
+                self.assertTrue(exhausted_account.auto_disabled)
+                self.assertEqual(
+                    exhausted_account.next_quota_check_reason,
+                    "上游 quota exhausted 后自动恢复重试",
+                )
+
+    def test_anthropic_stream_quota_exhausted_walks_accounts_until_one_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_quota_exhausted_http_error_response()],
+                    "acc-2": [_quota_exhausted_http_error_response()],
+                    "acc-3": [_text_claude_stream("第三个账号命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            for index in range(1, 4):
+                store.save(
+                    Account(
+                        id=f"acc-{index}",
+                        name=f"账号{index}",
+                        access_token=f"token-{index}",
+                        refresh_token=f"refresh-{index}",
+                        utdid=f"utdid-{index}",
+                        fill_priority=index,
+                    )
+                )
+
+            response, response_text = asyncio.run(
+                _invoke_anthropic_messages_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 256,
+                        "stream": True,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-accio-account-id"], "acc-3")
+            self.assertIn("第三个账号命中", response_text)
+            self.assertEqual(fake_client.calls, ["acc-1", "acc-2", "acc-3"])
+
+            for exhausted_id in ("acc-1", "acc-2"):
+                exhausted_account = store.get_account(exhausted_id)
+                self.assertIsNotNone(exhausted_account)
+                self.assertTrue(exhausted_account.auto_disabled)
+                self.assertEqual(
+                    exhausted_account.next_quota_check_reason,
+                    "上游 quota exhausted 后自动恢复重试",
+                )
+
+    def test_native_generate_content_quota_exhausted_walks_accounts_until_one_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_quota_exhausted_http_error_response()],
+                    "acc-2": [_quota_exhausted_http_error_response()],
+                    "acc-3": [_text_claude_stream("第三个账号命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                    app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            for index in range(1, 4):
+                store.save(
+                    Account(
+                        id=f"acc-{index}",
+                        name=f"账号{index}",
+                        access_token=f"token-{index}",
+                        refresh_token=f"refresh-{index}",
+                        utdid=f"utdid-{index}",
+                        fill_priority=index,
+                    )
+                )
+
+            response, response_text = asyncio.run(
+                _invoke_native_generate_content_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+                    },
+                )
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-accio-account-id"], "acc-3")
+            self.assertIn("第三个账号命中", response_text)
+            self.assertEqual(fake_client.calls, ["acc-1", "acc-2", "acc-3"])
+
+            for exhausted_id in ("acc-1", "acc-2"):
+                exhausted_account = store.get_account(exhausted_id)
+                self.assertIsNotNone(exhausted_account)
+                self.assertTrue(exhausted_account.auto_disabled)
+                self.assertEqual(
+                    exhausted_account.next_quota_check_reason,
+                    "上游 quota exhausted 后自动恢复重试",
+                )
+
+    def test_gemini_generate_content_quota_exhausted_walks_accounts_until_one_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_quota_exhausted_http_error_response()],
+                    "acc-2": [_quota_exhausted_http_error_response()],
+                    "acc-3": [_gemini_text_response("第三个账号命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            for index in range(1, 4):
+                store.save(
+                    Account(
+                        id=f"acc-{index}",
+                        name=f"账号{index}",
+                        access_token=f"token-{index}",
+                        refresh_token=f"refresh-{index}",
+                        utdid=f"utdid-{index}",
+                        fill_priority=index,
+                    )
+                )
+
+            response, response_text = asyncio.run(
+                _invoke_gemini_generate_content_route(
+                    app,
+                    headers={"x-goog-api-key": "admin"},
+                    model_name="gemini-2.5-pro",
+                    payload={
+                        "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+                    },
+                )
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-accio-account-id"], "acc-3")
+            self.assertIn("第三个账号命中", response_text)
+            self.assertEqual(fake_client.calls, ["acc-1", "acc-2", "acc-3"])
+
+            for exhausted_id in ("acc-1", "acc-2"):
+                exhausted_account = store.get_account(exhausted_id)
+                self.assertIsNotNone(exhausted_account)
+                self.assertTrue(exhausted_account.auto_disabled)
+                self.assertEqual(
+                    exhausted_account.next_quota_check_reason,
+                    "上游 quota exhausted 后自动恢复重试",
+                )
 
     def test_native_generate_content_retries_once_after_retryable_upstream_turn_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:

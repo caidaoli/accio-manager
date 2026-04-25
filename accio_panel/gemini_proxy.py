@@ -749,6 +749,7 @@ def iter_gemini_generate_content_payloads(
             event_payload = _parse_json_dict(json_text)
             if not event_payload:
                 continue
+            _raise_upstream_turn_error_if_present(event_payload)
 
             usage_candidate = event_payload.get(
                 "usageMetadata",
@@ -805,6 +806,7 @@ def decode_gemini_generate_content_response(
             event_payload = _parse_json_dict(json_text)
             if not event_payload:
                 continue
+            _raise_upstream_turn_error_if_present(event_payload)
 
             usage_candidate = event_payload.get(
                 "usageMetadata",
@@ -848,6 +850,22 @@ def decode_gemini_generate_content_response(
         raise ValueError("上游未返回有效的 Gemini 响应。")
 
     return merged_payload
+
+
+def _raise_upstream_turn_error_if_present(payload: dict[str, Any]) -> None:
+    if not payload.get("turn_complete"):
+        return
+    error_code = str(payload.get("error_code") or "").strip()
+    error_message = str(payload.get("error_message") or "").strip()
+    if not error_code and not error_message:
+        return
+    from .anthropic_proxy import UpstreamTurnError
+
+    raise UpstreamTurnError(
+        error_code=error_code,
+        error_message=error_message,
+        payload=payload,
+    )
 
 
 def build_gemini_generate_content_response(
