@@ -62,8 +62,10 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
     _extract_proxy_api_key = context.extract_proxy_api_key
     _iter_upstream_sse_bytes = context.iter_upstream_sse_bytes
     _gemini_error_response = context.gemini_error_response
+    _gemini_selection_error_response = context.gemini_selection_error_response
     _decode_gemini_generate_content_response = context.decode_gemini_generate_content_response
     _native_error_response = context.native_error_response
+    _native_selection_error_response = context.native_selection_error_response
 
     async def _handle_gemini_generate_content(
         request: Request,
@@ -143,11 +145,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                     "durationMs": int((time.perf_counter() - started_at) * 1000),
                 }
             )
-            return _gemini_error_response(
-                exc.status_code,
-                exc.message,
-                error_status="UNAVAILABLE",
-            )
+            return _gemini_selection_error_response(exc)
 
         accio_body = build_generate_content_request(
             payload,
@@ -316,11 +314,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                         exclude_account_ids=excluded_account_ids,
                     )
                 except ProxySelectionError as exc:
-                    return _gemini_error_response(
-                        exc.status_code,
-                        exc.message,
-                        error_status="UNAVAILABLE",
-                    )
+                    return _gemini_selection_error_response(exc)
 
                 retry_body = build_generate_content_request(
                     payload,
@@ -558,11 +552,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                     exclude_account_ids=excluded_account_ids,
                 )
             except ProxySelectionError as exc:
-                return _gemini_error_response(
-                    exc.status_code,
-                    exc.message,
-                    error_status="UNAVAILABLE",
-                )
+                return _gemini_selection_error_response(exc)
 
             retry_body = build_generate_content_request(
                 payload,
@@ -748,7 +738,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                 model,
             )
         except ProxySelectionError as exc:
-            return _native_error_response(exc.status_code, exc.message)
+            return _native_selection_error_response(exc)
 
         accio_body = build_generate_content_request(
             payload,
@@ -872,7 +862,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                     exclude_account_ids=excluded_account_ids,
                 )
             except ProxySelectionError as exc:
-                return _native_error_response(exc.status_code, exc.message)
+                return _native_selection_error_response(exc)
 
             retry_body = build_generate_content_request(
                 payload,

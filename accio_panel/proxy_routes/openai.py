@@ -62,6 +62,7 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
     _disable_account_model_on_empty_response = context.disable_account_model_on_empty_response
     _mark_account_quota_exhausted_cooldown = context.mark_account_quota_exhausted_cooldown
     _openai_error_response = context.openai_error_response
+    _openai_selection_error_response = context.openai_selection_error_response
 
     def _openai_error_builder(
         status_code: int, message: str, stop_reason: str,
@@ -163,12 +164,7 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                     "durationMs": int((time.perf_counter() - started_at) * 1000),
                 }
             )
-            return _openai_error_response(
-                exc.status_code,
-                exc.message,
-                error_type="server_error",
-                code="proxy_selection_failed",
-            )
+            return _openai_selection_error_response(exc)
 
         accio_body = build_accio_request_from_openai(
             chat_payload,
@@ -354,12 +350,7 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                         exclude_account_ids=excluded_account_ids,
                     )
                 except ProxySelectionError as exc:
-                    return _openai_error_response(
-                        exc.status_code,
-                        exc.message,
-                        error_type="server_error",
-                        code="proxy_selection_failed",
-                    )
+                    return _openai_selection_error_response(exc)
 
                 retry_body = build_accio_request_from_openai(
                     chat_payload,
@@ -542,12 +533,7 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                     exclude_account_ids=excluded_account_ids,
                 )
             except ProxySelectionError as exc:
-                return _openai_error_response(
-                    exc.status_code,
-                    exc.message,
-                    error_type="server_error",
-                    code="proxy_selection_failed",
-                )
+                return _openai_selection_error_response(exc)
 
             retry_body = build_accio_request_from_openai(
                 chat_payload,
@@ -780,12 +766,7 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                     "durationMs": int((time.perf_counter() - started_at) * 1000),
                 }
             )
-            return _openai_error_response(
-                exc.status_code,
-                exc.message,
-                error_type="server_error",
-                code="proxy_selection_failed",
-            )
+            return _openai_selection_error_response(exc)
 
         accio_body = build_accio_request_from_openai(
             payload,
@@ -950,12 +931,7 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                         exclude_account_ids=excluded_account_ids,
                     )
                 except ProxySelectionError as exc:
-                    return _openai_error_response(
-                        exc.status_code,
-                        exc.message,
-                        error_type="server_error",
-                        code="proxy_selection_failed",
-                    )
+                    return _openai_selection_error_response(exc)
 
                 retry_body = build_accio_request_from_openai(
                     payload,
@@ -1138,12 +1114,7 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                     exclude_account_ids=excluded_account_ids,
                 )
             except ProxySelectionError as exc:
-                return _openai_error_response(
-                    exc.status_code,
-                    exc.message,
-                    error_type="server_error",
-                    code="proxy_selection_failed",
-                )
+                return _openai_selection_error_response(exc)
 
             retry_body = build_accio_request_from_openai(
                 payload,

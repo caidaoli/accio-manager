@@ -56,6 +56,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
     _disable_account_model_on_empty_response = context.disable_account_model_on_empty_response
     _mark_account_quota_exhausted_cooldown = context.mark_account_quota_exhausted_cooldown
     _anthropic_error_response = context.anthropic_error_response
+    _anthropic_selection_error_response = context.anthropic_selection_error_response
 
     @application.post("/v1/messages")
     async def anthropic_messages(request: Request) -> Response:
@@ -121,6 +122,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                 _select_proxy_account,
                 application,
                 panel_settings,
+                model,
             )
         except ProxySelectionError as exc:
             api_log_store.record(
@@ -148,7 +150,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                     "durationMs": int((time.perf_counter() - started_at) * 1000),
                 }
             )
-            return _anthropic_error_response(exc.status_code, exc.message)
+            return _anthropic_selection_error_response(exc)
 
         accio_body = build_accio_request(
             payload,
@@ -315,7 +317,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                         exclude_account_ids=excluded_account_ids,
                     )
                 except ProxySelectionError as exc:
-                    return _anthropic_error_response(exc.status_code, exc.message)
+                    return _anthropic_selection_error_response(exc)
 
                 retry_body = build_accio_request(
                     payload,
@@ -506,7 +508,7 @@ def install_anthropic_routes(context: ProxyRouteContext) -> None:
                     exclude_account_ids=excluded_account_ids,
                 )
             except ProxySelectionError as exc:
-                return _anthropic_error_response(exc.status_code, exc.message)
+                return _anthropic_selection_error_response(exc)
 
             retry_body = build_accio_request(
                 payload,

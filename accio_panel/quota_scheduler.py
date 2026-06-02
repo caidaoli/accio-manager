@@ -8,12 +8,13 @@ from .app_settings import PanelSettingsStore
 from .client import AccioClient
 from .models import Account
 from .proxy_selection import (
+    QUOTA_SCHEDULER_TICK_SECONDS,
     _now_timestamp,
     _query_quota_with_refresh_fallback,
 )
 from .store import AccountStore
 
-SCHEDULER_TICK_SECONDS = 30
+SCHEDULER_TICK_SECONDS = QUOTA_SCHEDULER_TICK_SECONDS
 
 
 async def _quota_scheduler_loop(application: FastAPI) -> None:

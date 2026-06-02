@@ -18,15 +18,19 @@ from ..model_catalog_cache import (
 from ..proxy_selection import (
     ProxySelectionError as _ProxySelectionError,
     _anthropic_error_response as _anthropic_error_response_impl,
+    _anthropic_selection_error_response as _anthropic_selection_error_response_impl,
     _authorize_proxy_request as _authorize_proxy_request_impl,
     _disable_account_model_on_empty_response as _disable_account_model_on_empty_response_impl,
     _empty_response_log_message as _empty_response_log_message_impl,
     _extract_proxy_api_key as _extract_proxy_api_key_impl,
     _gemini_error_response as _gemini_error_response_impl,
+    _gemini_selection_error_response as _gemini_selection_error_response_impl,
     _iter_upstream_sse_bytes as _iter_upstream_sse_bytes_impl,
     _mark_account_quota_exhausted_cooldown as _mark_account_quota_exhausted_cooldown_impl,
     _native_error_response as _native_error_response_impl,
+    _native_selection_error_response as _native_selection_error_response_impl,
     _openai_error_response as _openai_error_response_impl,
+    _openai_selection_error_response as _openai_selection_error_response_impl,
     _select_proxy_account as _select_proxy_account_impl,
     _should_disable_model_on_empty_response as _should_disable_model_on_empty_response_impl,
 )
@@ -90,14 +94,26 @@ class ProxyRouteContext:
     def gemini_error_response(self, *args: Any, **kwargs: Any):
         return _gemini_error_response_impl(*args, **kwargs)
 
+    def gemini_selection_error_response(self, *args: Any, **kwargs: Any):
+        return _gemini_selection_error_response_impl(*args, **kwargs)
+
     def decode_gemini_generate_content_response(self, *args: Any, **kwargs: Any):
         return _decode_gemini_generate_content_response(*args, **kwargs)
 
     def openai_error_response(self, *args: Any, **kwargs: Any):
         return _openai_error_response_impl(*args, **kwargs)
 
+    def openai_selection_error_response(self, *args: Any, **kwargs: Any):
+        return _openai_selection_error_response_impl(*args, **kwargs)
+
     def anthropic_error_response(self, *args: Any, **kwargs: Any):
         return _anthropic_error_response_impl(*args, **kwargs)
 
+    def anthropic_selection_error_response(self, *args: Any, **kwargs: Any):
+        return _anthropic_selection_error_response_impl(*args, **kwargs)
+
     def native_error_response(self, *args: Any, **kwargs: Any):
         return _native_error_response_impl(*args, **kwargs)
+
+    def native_selection_error_response(self, *args: Any, **kwargs: Any):
+        return _native_selection_error_response_impl(*args, **kwargs)

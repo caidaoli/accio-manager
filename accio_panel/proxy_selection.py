@@ -22,6 +22,8 @@ from .utils import format_timestamp, mask_token
 
 ENABLED_ACCOUNT_CHECK_INTERVAL_SECONDS = 15 * 60
 FAILED_ACCOUNT_RETRY_SECONDS = 5 * 60
+MODEL_COOLDOWN_MIN_SECONDS = FAILED_ACCOUNT_RETRY_SECONDS
+QUOTA_SCHEDULER_TICK_SECONDS = 30
 RECOVERY_CHECK_BUFFER_SECONDS = 90
 ABNORMAL_ACCOUNT_RECOVERY_INTERVAL_SECONDS = 30 * 60
 UPSTREAM_QUOTA_EXHAUSTED_MAX_WAIT_SECONDS = 30 * 60
@@ -29,13 +31,42 @@ UPSTREAM_QUOTA_EXHAUSTED_AUTO_DISABLED_REASON = (
     "上游返回 [429]: quota exhausted，系统已暂时跳过该账号并等待自动恢复重试。"
 )
 UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON = "上游 quota exhausted 后自动恢复重试"
+ABNORMAL_ACCOUNT_RECOVERY_REASON = "异常禁用后定时恢复检查"
+MODEL_COOLDOWN_ERROR_CODE = "MODEL_COOLDOWN"
 
 
 class ProxySelectionError(Exception):
-    def __init__(self, status_code: int, message: str):
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        error_type: str = "api_error",
+        code: str | None = None,
+        model: str | None = None,
+        reset_seconds: int | None = None,
+        reset_time: str | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.message = message
+        self.error_type = error_type
+        self.code = code
+        self.model = model
+        self.reset_seconds = reset_seconds
+        self.reset_time = reset_time
+
+    def extra_error_fields(self) -> dict[str, Any]:
+        fields: dict[str, Any] = {}
+        if self.code:
+            fields["code"] = self.code
+        if self.model:
+            fields["model"] = self.model
+        if self.reset_seconds is not None:
+            fields["reset_seconds"] = self.reset_seconds
+        if self.reset_time:
+            fields["reset_time"] = self.reset_time
+        return fields
 
 
 def _normalize_success_message(message: Any) -> str:
@@ -317,9 +348,18 @@ def _anthropic_error_response(
     message: str,
     *,
     error_type: str = "api_error",
+    code: str | None = None,
+    extra_fields: dict[str, Any] | None = None,
 ) -> JSONResponse:
+    payload = anthropic_error_payload(message, error_type=error_type)
+    error = payload.get("error")
+    if isinstance(error, dict):
+        if code:
+            error["code"] = code
+        if extra_fields:
+            error.update(extra_fields)
     return JSONResponse(
-        anthropic_error_payload(message, error_type=error_type),
+        payload,
         status_code=status_code,
     )
 
@@ -329,9 +369,14 @@ def _gemini_error_response(
     message: str,
     *,
     error_status: str = "INVALID_ARGUMENT",
+    extra_fields: dict[str, Any] | None = None,
 ) -> JSONResponse:
+    payload = gemini_error_payload(status_code, message, error_status=error_status)
+    error = payload.get("error")
+    if isinstance(error, dict) and extra_fields:
+        error.update(extra_fields)
     return JSONResponse(
-        gemini_error_payload(status_code, message, error_status=error_status),
+        payload,
         status_code=status_code,
     )
 
@@ -342,17 +387,73 @@ def _openai_error_response(
     *,
     error_type: str = "invalid_request_error",
     code: str | None = None,
+    extra_fields: dict[str, Any] | None = None,
 ) -> JSONResponse:
+    payload = openai_error_payload(message, error_type=error_type, code=code)
+    error = payload.get("error")
+    if isinstance(error, dict) and extra_fields:
+        error.update(extra_fields)
     return JSONResponse(
-        openai_error_payload(message, error_type=error_type, code=code),
+        payload,
         status_code=status_code,
     )
 
 
-def _native_error_response(status_code: int, message: str) -> JSONResponse:
+def _native_error_response(
+    status_code: int,
+    message: str,
+    *,
+    extra_fields: dict[str, Any] | None = None,
+) -> JSONResponse:
+    payload: dict[str, Any] = {"success": False, "message": message}
+    if extra_fields:
+        payload.update(extra_fields)
     return JSONResponse(
-        {"success": False, "message": message},
+        payload,
         status_code=status_code,
+    )
+
+
+def _anthropic_selection_error_response(exc: ProxySelectionError) -> JSONResponse:
+    return _anthropic_error_response(
+        exc.status_code,
+        exc.message,
+        error_type=exc.error_type,
+        code=exc.code,
+        extra_fields=exc.extra_error_fields(),
+    )
+
+
+def _gemini_selection_error_response(exc: ProxySelectionError) -> JSONResponse:
+    extra_fields = exc.extra_error_fields()
+    if exc.code:
+        extra_fields["type"] = exc.code
+    return _gemini_error_response(
+        exc.status_code,
+        exc.message,
+        error_status=exc.code or "UNAVAILABLE",
+        extra_fields=extra_fields,
+    )
+
+
+def _openai_selection_error_response(exc: ProxySelectionError) -> JSONResponse:
+    return _openai_error_response(
+        exc.status_code,
+        exc.message,
+        error_type=exc.error_type if exc.code else "server_error",
+        code=exc.code or "proxy_selection_failed",
+        extra_fields=exc.extra_error_fields(),
+    )
+
+
+def _native_selection_error_response(exc: ProxySelectionError) -> JSONResponse:
+    extra_fields = exc.extra_error_fields()
+    if exc.code:
+        extra_fields["type"] = exc.code
+    return _native_error_response(
+        exc.status_code,
+        exc.message,
+        extra_fields=extra_fields,
     )
 
 
@@ -468,13 +569,13 @@ def _disable_account_after_refresh_failure(
         account.auto_disabled_reason = reason
         account.last_quota_check_at = now_ts
         account.next_quota_check_at = now_ts + ABNORMAL_ACCOUNT_RECOVERY_INTERVAL_SECONDS
-        account.next_quota_check_reason = "异常禁用后定时恢复检查"
+        account.next_quota_check_reason = ABNORMAL_ACCOUNT_RECOVERY_REASON
         return account
     updated.auto_disabled = False
     updated.auto_disabled_reason = reason
     updated.last_quota_check_at = now_ts
     updated.next_quota_check_at = now_ts + ABNORMAL_ACCOUNT_RECOVERY_INTERVAL_SECONDS
-    updated.next_quota_check_reason = "异常禁用后定时恢复检查"
+    updated.next_quota_check_reason = ABNORMAL_ACCOUNT_RECOVERY_REASON
     store.save(updated)
     return updated
 
@@ -484,6 +585,16 @@ def _is_upstream_quota_exhausted_cooldown(account: Account) -> bool:
         account.auto_disabled
         and str(account.next_quota_check_reason or "").strip()
         == UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON
+    )
+
+
+def _is_abnormal_recovery_cooldown(account: Account) -> bool:
+    return (
+        not account.manual_enabled
+        and bool(str(account.auto_disabled_reason or "").strip())
+        and account.next_quota_check_at is not None
+        and str(account.next_quota_check_reason or "").strip()
+        == ABNORMAL_ACCOUNT_RECOVERY_REASON
     )
 
 
@@ -501,6 +612,87 @@ def _mark_account_quota_exhausted_cooldown(
     updated.updated_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_ts))
     store.save(updated)
     return updated
+
+
+def _format_go_duration(total_seconds: int) -> str:
+    seconds = max(0, int(total_seconds))
+    if seconds == 0:
+        return "0s"
+
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds:
+        parts.append(f"{seconds}s")
+    return "".join(parts)
+
+
+def _model_cooldown_accounts(
+    store: AccountStore,
+    model_name: str | None,
+    *,
+    provider: str | None = None,
+) -> list[Account]:
+    return [
+        account
+        for account in store.list_accounts()
+        if (
+            _is_upstream_quota_exhausted_cooldown(account)
+            or _is_abnormal_recovery_cooldown(account)
+        )
+        and not _account_model_disabled_reason(
+            account,
+            model_name,
+            provider=provider,
+        )
+    ]
+
+
+def _cooldown_reset_seconds(accounts: list[Account]) -> int:
+    now_ts = _now_timestamp()
+    reset_values = [
+        max(
+            MODEL_COOLDOWN_MIN_SECONDS,
+            int(account.next_quota_check_at or 0) - now_ts,
+        )
+        for account in accounts
+        if account.next_quota_check_at is not None
+    ]
+    if not reset_values:
+        return MODEL_COOLDOWN_MIN_SECONDS
+    return min(reset_values)
+
+
+def _raise_model_cooldown_error(
+    accounts: list[Account],
+    model_name: str | None,
+    *,
+    provider: str | None = None,
+) -> None:
+    reset_seconds = _cooldown_reset_seconds(accounts)
+    reset_time = _format_go_duration(reset_seconds)
+    normalized_model = _normalize_target_model(model_name, provider=provider)
+    if normalized_model:
+        message = (
+            f"当前没有已启用账号可用于模型 {normalized_model}，"
+            f"请在 {reset_seconds} 秒后重试。"
+        )
+    else:
+        message = f"当前没有已启用的账号可供 API 调用，请在 {reset_seconds} 秒后重试。"
+
+    raise ProxySelectionError(
+        429,
+        message,
+        error_type=MODEL_COOLDOWN_ERROR_CODE,
+        code=MODEL_COOLDOWN_ERROR_CODE,
+        model=normalized_model or None,
+        reset_seconds=reset_seconds,
+        reset_time=reset_time,
+    )
 
 
 def _query_quota_with_refresh_fallback(
@@ -622,6 +814,17 @@ def _select_proxy_account(
         exclude_account_ids=exclude_account_ids,
     )
     if not candidates:
+        cooldown_accounts = _model_cooldown_accounts(
+            store,
+            model_name,
+            provider=provider,
+        )
+        if cooldown_accounts:
+            _raise_model_cooldown_error(
+                cooldown_accounts,
+                model_name,
+                provider=provider,
+            )
         if model_name:
             raise ProxySelectionError(
                 503,

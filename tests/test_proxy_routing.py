@@ -14,7 +14,11 @@ from accio_panel.config import Settings
 from accio_panel.models import Account
 from accio_panel.mysql_storage import MySQLGateway
 from accio_panel.store import AccountStore
-from accio_panel.proxy_selection import _ordered_proxy_candidates, _select_proxy_account
+from accio_panel.proxy_selection import (
+    UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON,
+    _ordered_proxy_candidates,
+    _select_proxy_account,
+)
 from accio_panel.web import create_app
 
 
@@ -598,6 +602,177 @@ class ProxyRoutingTests(unittest.TestCase):
             candidates = _ordered_proxy_candidates(store, "claude-opus-4-6")
 
             self.assertEqual([account.id for account in candidates], ["acc-enabled"])
+
+    def test_anthropic_messages_returns_model_cooldown_when_all_accounts_are_cooling_down(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=_FakeProxyClient({})):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            app.state.store.save(
+                Account(
+                    id="acc-1",
+                    name="账号1",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    auto_disabled=True,
+                    auto_disabled_reason="上游返回 [429]: quota exhausted",
+                    next_quota_check_at=1_000_300,
+                    next_quota_check_reason=UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON,
+                )
+            )
+
+            with patch("accio_panel.proxy_selection._now_timestamp", return_value=1_000_000):
+                response, response_text = asyncio.run(
+                    _invoke_anthropic_messages_route(
+                        app,
+                        headers={"x-api-key": "admin"},
+                        payload={
+                            "model": "claude-sonnet-4-6",
+                            "max_tokens": 256,
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                    )
+                )
+
+            body = json.loads(response_text)
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(
+                body,
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "MODEL_COOLDOWN",
+                        "code": "MODEL_COOLDOWN",
+                        "message": "当前没有已启用账号可用于模型 claude-sonnet-4-6，请在 300 秒后重试。",
+                        "model": "claude-sonnet-4-6",
+                        "reset_seconds": 300,
+                        "reset_time": "5m",
+                    },
+                },
+            )
+
+    def test_model_cooldown_reset_seconds_is_at_least_retry_interval(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=_FakeProxyClient({})):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            app.state.store.save(
+                Account(
+                    id="acc-1",
+                    name="账号1",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    auto_disabled=True,
+                    auto_disabled_reason="上游返回 [429]: quota exhausted",
+                    next_quota_check_at=1_000_001,
+                    next_quota_check_reason=UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON,
+                )
+            )
+
+            with patch("accio_panel.proxy_selection._now_timestamp", return_value=1_000_000):
+                response, response_text = asyncio.run(
+                    _invoke_anthropic_messages_route(
+                        app,
+                        headers={"x-api-key": "admin"},
+                        payload={
+                            "model": "claude-sonnet-4-6",
+                            "max_tokens": 256,
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                    )
+                )
+
+            body = json.loads(response_text)
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(body["error"]["reset_seconds"], 300)
+            self.assertEqual(body["error"]["reset_time"], "5m")
+
+    def test_model_cooldown_uses_abnormal_recovery_check_time(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=_FakeProxyClient({})):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            app.state.store.save(
+                Account(
+                    id="acc-1",
+                    name="账号1",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    manual_enabled=False,
+                    auto_disabled_reason="额度查询失败，且 Token 刷新失败",
+                    next_quota_check_at=1_001_800,
+                    next_quota_check_reason="异常禁用后定时恢复检查",
+                )
+            )
+
+            with patch("accio_panel.proxy_selection._now_timestamp", return_value=1_000_000):
+                response, response_text = asyncio.run(
+                    _invoke_anthropic_messages_route(
+                        app,
+                        headers={"x-api-key": "admin"},
+                        payload={
+                            "model": "claude-sonnet-4-6",
+                            "max_tokens": 256,
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                    )
+                )
+
+            body = json.loads(response_text)
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(body["error"]["type"], "MODEL_COOLDOWN")
+            self.assertEqual(body["error"]["code"], "MODEL_COOLDOWN")
+            self.assertEqual(
+                body["error"]["message"],
+                "当前没有已启用账号可用于模型 claude-sonnet-4-6，请在 1800 秒后重试。",
+            )
+            self.assertEqual(body["error"]["reset_seconds"], 1800)
+            self.assertEqual(body["error"]["reset_time"], "30m")
 
     def test_mysql_gateway_roundtrip_includes_disabled_models_column(self):
         disabled_reason = "模型 claude-opus-4-6 出现空回复"
