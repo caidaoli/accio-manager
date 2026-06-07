@@ -52,7 +52,7 @@ def _env_list(name: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    version: str = "0.8.8"
+    version: str = os.getenv("ACCIO_VERSION", "0.14.0").strip()
     base_url: str = os.getenv("ACCIO_BASE_URL", "https://phoenix-gw.alibaba.com")
     app_key: str = os.getenv("ACCIO_APP_KEY", "35298846").strip()
     callback_host: str = os.getenv("ACCIO_CALLBACK_HOST", "127.0.0.1")

@@ -51,7 +51,18 @@ class _FakeGateway:
 
 
 class RuntimeStorageTests(unittest.TestCase):
-    def test_settings_version_is_fixed_and_ignores_accio_version_env(self):
+    def test_settings_version_defaults_to_current_upstream_header_version(self):
+        import accio_panel.config as config_module
+
+        with patch.dict(os.environ, {}, clear=True):
+            reloaded = importlib.reload(config_module)
+            try:
+                settings = reloaded.Settings()
+                self.assertEqual(settings.version, "0.14.0")
+            finally:
+                importlib.reload(config_module)
+
+    def test_settings_version_reads_accio_version_env(self):
         import accio_panel.config as config_module
 
         with patch.dict(
@@ -62,7 +73,7 @@ class RuntimeStorageTests(unittest.TestCase):
             reloaded = importlib.reload(config_module)
             try:
                 settings = reloaded.Settings()
-                self.assertEqual(settings.version, "0.8.8")
+                self.assertEqual(settings.version, "9.9.9")
             finally:
                 importlib.reload(config_module)
 
