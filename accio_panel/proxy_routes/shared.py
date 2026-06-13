@@ -79,6 +79,9 @@ def make_record_final_log(
             output_tokens=output_tokens,
             duration_ms=int((time.perf_counter() - started_at) * 1000),
             level=level,
+            phase="final",
+            attempt=0,
+            root_request_id=selected_request_id,
             extra_fields=extra_fields,
         )
 
@@ -240,13 +243,16 @@ def make_build_stream_attempt(
                 "stream": True,
                 "strategy": panel_settings.api_account_strategy,
                 "requestId": selected_request_id,
+                "rootRequestId": selected_request_id,
+                "phase": "final",
+                "attempt": 0,
                 "message": (
                     empty_response_log_message(
                         config.model,
                         disable_model=True,
                     )
                     if empty_response
-                    else config.stream_complete_message
+                    else "流式调用完成"
                 ),
                 "statusCode": 200,
                 "stopReason": str(summary.get("stop_reason") or config.default_stop_reason),

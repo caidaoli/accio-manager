@@ -16,6 +16,13 @@ def _truncate(value: Any, limit: int = 500) -> str:
     return f"{text[:limit]}..."
 
 
+def _normalize_log_message(value: Any, *, phase: str, stream: bool) -> str:
+    message = str(value or "").strip()
+    if phase != "upstream_attempt" and stream and "上游流式请求完成" in message:
+        return "流式调用完成"
+    return message
+
+
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -104,10 +111,24 @@ class ApiLogStore:
 
     def record(self, payload: dict[str, Any]) -> None:
         image_summary = _extract_image_summary(payload)
+        phase = str(payload.get("phase") or "").strip() or "final"
+        attempt = _as_int(payload.get("attempt"), 0)
+        request_id = str(payload.get("requestId") or "")
+        root_request_id = str(payload.get("rootRequestId") or request_id)
+        stream = bool(payload.get("stream", True))
+        message = _normalize_log_message(
+            payload.get("message"),
+            phase=phase,
+            stream=stream,
+        )
         entry = {
             "id": uuid.uuid4().hex,
             "createdAt": now_text(),
             **payload,
+            "phase": phase,
+            "attempt": attempt,
+            "rootRequestId": root_request_id,
+            "message": message,
             "hasImageData": payload.get("hasImageData", image_summary["hasImageData"]),
             "imageBlocks": payload.get("imageBlocks", image_summary["imageBlocks"]),
             "imageMimeTypes": payload.get("imageMimeTypes", image_summary["imageMimeTypes"]),
@@ -156,6 +177,22 @@ class ApiLogStore:
             image_summary = _extract_image_summary(payload)
             phase = str(payload.get("phase") or "").strip() or "final"
             attempt = _as_int(payload.get("attempt"), 0)
+            stream = bool(payload.get("stream", True))
+            root_request_id = str(
+                payload.get("rootRequestId") or payload.get("requestId") or ""
+            )
+            message = _normalize_log_message(
+                payload.get("message"),
+                phase=phase,
+                stream=stream,
+            )
+            detail_payload = {
+                **payload,
+                "phase": phase,
+                "attempt": attempt,
+                "rootRequestId": root_request_id,
+                "message": message,
+            }
             item = {
                 "id": str(payload.get("id") or ""),
                 "createdAt": str(payload.get("createdAt") or "-"),
@@ -164,12 +201,12 @@ class ApiLogStore:
                 "accountName": str(payload.get("accountName") or "-"),
                 "accountId": str(payload.get("accountId") or ""),
                 "model": str(payload.get("model") or "-"),
-                "stream": bool(payload.get("stream", True)),
+                "stream": stream,
                 "success": bool(payload.get("success", False)),
                 "emptyResponse": bool(payload.get("emptyResponse", False)),
                 "stopReason": str(payload.get("stopReason") or "-"),
                 "statusCode": str(payload.get("statusCode") or "-"),
-                "message": _truncate(payload.get("message"), 160) or "-",
+                "message": _truncate(message, 160) or "-",
                 "inputTokens": int(payload.get("inputTokens") or 0),
                 "outputTokens": int(payload.get("outputTokens") or 0),
                 "durationMs": int(payload.get("durationMs") or 0),
@@ -178,11 +215,9 @@ class ApiLogStore:
                 "attempt": attempt,
                 "attemptDisplay": str(attempt) if attempt > 0 else "-",
                 "requestId": str(payload.get("requestId") or ""),
-                "rootRequestId": str(
-                    payload.get("rootRequestId") or payload.get("requestId") or ""
-                ),
+                "rootRequestId": root_request_id,
                 **image_summary,
-                "detailJson": json.dumps(payload, ensure_ascii=False, indent=2),
+                "detailJson": json.dumps(detail_payload, ensure_ascii=False, indent=2),
             }
             items.append(item)
             if len(items) >= limit:
