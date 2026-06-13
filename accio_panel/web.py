@@ -16,6 +16,7 @@ from .client import AccioClient
 from .config import Settings
 from .model_catalog_cache import _initial_model_catalog_cache
 from .persistence import create_runtime_stores
+from .proxy_cache import ProxyCandidateCache
 from .proxy_selection import (
     _api_account_strategy_label,
     _effective_api_base_url,
@@ -88,6 +89,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.quota_scheduler_task = None
     application.state.proxy_round_robin_index = 0
     application.state.model_catalog_cache = _initial_model_catalog_cache()
+    application.state.proxy_cache = ProxyCandidateCache(ttl=2.0)  # 账号候选池缓存
 
     from .panel_routes import register_panel_routes
 

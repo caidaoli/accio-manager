@@ -424,8 +424,17 @@ class AccountStore(BaseAccountStore):
 
     def _write_account_unlocked(self, account: Account) -> None:
         self._normalize_account(account)
+        # 生产环境使用紧凑格式，减少 I/O 和序列化开销
+        # 开发调试时可设置 ACCIO_DEBUG=1 启用格式化
+        import os
+        use_indent = os.getenv("ACCIO_DEBUG", "").strip() in ("1", "true", "yes")
         self._account_file(account.id).write_text(
-            json.dumps(account.to_dict(), ensure_ascii=False, indent=2),
+            json.dumps(
+                account.to_dict(),
+                ensure_ascii=False,
+                indent=2 if use_indent else None,
+                separators=(", ", ": ") if use_indent else (",", ":"),
+            ),
             encoding="utf-8",
         )
 

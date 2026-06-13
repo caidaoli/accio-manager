@@ -16,6 +16,7 @@ from .config import Settings
 from .gemini_proxy import gemini_error_payload, normalize_gemini_model_name
 from .models import Account
 from .openai_proxy import openai_error_payload
+from .proxy_cache import ProxyCandidateCache
 from .store import AccountStore
 from .utils import format_timestamp, mask_token
 
@@ -512,13 +513,13 @@ def _iter_upstream_sse_bytes(response: requests.Response) -> Iterator[bytes]:
         response.close()
 
 
-def _ordered_proxy_candidates(
+def _ordered_proxy_candidates_uncached(
     store: AccountStore,
-    model_name: str | None = None,
-    *,
-    provider: str | None = None,
-    exclude_account_ids: set[str] | None = None,
+    model_name: str | None,
+    provider: str | None,
+    exclude_account_ids: set[str] | None,
 ) -> list[Account]:
+    """原始账号候选过滤逻辑（无缓存）- 缓存层专用签名"""
     excluded_ids = exclude_account_ids or set()
     return [
         account
@@ -532,6 +533,30 @@ def _ordered_proxy_candidates(
             provider=provider,
         )
     ]
+
+
+def _ordered_proxy_candidates(
+    store: AccountStore,
+    model_name: str | None = None,
+    *,
+    provider: str | None = None,
+    exclude_account_ids: set[str] | None = None,
+    cache: ProxyCandidateCache | None = None,
+) -> list[Account]:
+    """获取有序的代理候选账号列表（带缓存）"""
+    if cache is None:
+        # 降级为无缓存模式
+        return _ordered_proxy_candidates_uncached(
+            store, model_name, provider, exclude_account_ids
+        )
+
+    return cache.get_candidates(
+        store,
+        model_name,
+        provider,
+        exclude_account_ids,
+        _ordered_proxy_candidates_uncached,
+    )
 
 
 def _query_quota(
@@ -806,12 +831,14 @@ def _select_proxy_account(
     exclude_account_ids: set[str] | None = None,
 ) -> tuple[Account, dict[str, Any]]:
     store: AccountStore = application.state.store
+    cache: ProxyCandidateCache | None = getattr(application.state, "proxy_cache", None)
 
     candidates = _ordered_proxy_candidates(
         store,
         model_name,
         provider=provider,
         exclude_account_ids=exclude_account_ids,
+        cache=cache,
     )
     if not candidates:
         cooldown_accounts = _model_cooldown_accounts(

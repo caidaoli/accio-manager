@@ -287,6 +287,10 @@ class RuntimeStorageTests(unittest.TestCase):
             "updatedAt": "2026-04-04 01:01:00",
         }
 
+        # 使缓存失效以读取外部变更（MySQL 缓存 TTL 优化的权衡）
+        store._accounts_cache = None
+        store._accounts_by_id = {}
+
         self.assertEqual(
             [account.id for account in _ordered_proxy_candidates(store)],
             ["acc-1"],

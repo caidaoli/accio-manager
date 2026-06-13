@@ -6,6 +6,8 @@ from typing import Any
 from urllib.parse import unquote, urlencode
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .config import Settings
 from .models import Account
@@ -15,6 +17,22 @@ class AccioClient:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._session = requests.Session()
+
+        # 连接池优化：提升并发能力和容错性
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            backoff_factor=0.3,  # 0.3s, 0.6s, 1.2s
+        )
+        adapter = HTTPAdapter(
+            pool_connections=50,   # 连接池数量
+            pool_maxsize=100,      # 每个池最大连接数
+            max_retries=retry_strategy,
+            pool_block=False,      # 连接耗尽时不阻塞，直接创建新连接
+        )
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
 
     def get_proxies(self, proxy_url: str | None = None) -> dict[str, str] | None:
         if not proxy_url:

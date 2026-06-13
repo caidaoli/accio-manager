@@ -428,6 +428,8 @@ class MySQLAccountStore(BaseAccountStore):
         self.gateway = gateway
         self._accounts_cache: list[Account] | None = None
         self._accounts_by_id: dict[str, Account] = {}
+        self._cache_timestamp: float = 0
+        self._cache_ttl: float = 5.0  # 5 秒 TTL，平衡新鲜度与性能
         super().__init__()
 
     def _ensure_storage(self) -> None:
@@ -436,19 +438,33 @@ class MySQLAccountStore(BaseAccountStore):
     def _rebuild_index(self, accounts: list[Account]) -> None:
         self._accounts_by_id = {a.id: a for a in accounts}
 
+    def _is_cache_valid(self) -> bool:
+        """检查缓存是否在 TTL 内"""
+        import time
+        return (
+            self._accounts_cache is not None
+            and (time.time() - self._cache_timestamp) < self._cache_ttl
+        )
+
     def _warm_cache(self) -> list[Account]:
+        """重新加载缓存并更新时间戳"""
+        import time
         accounts = [
             Account.from_dict(payload) for payload in self.gateway.list_accounts()
         ]
         self._accounts_cache = accounts
+        self._cache_timestamp = time.time()
         self._rebuild_index(accounts)
         return accounts
 
     def _read_all_unlocked(self) -> list[Account]:
+        if self._is_cache_valid():
+            return self._accounts_cache
         return self._warm_cache()
 
     def _get_account_unlocked(self, account_id: str) -> Account | None:
-        self._warm_cache()
+        if not self._is_cache_valid():
+            self._warm_cache()
         return self._accounts_by_id.get(account_id)
 
     def _write_account_unlocked(self, account: Account) -> None:
