@@ -150,6 +150,7 @@ def make_build_stream_attempt(
     messages_count: int,
     record_attempt: Callable[..., None],
     disable_account_model_on_empty_response: Callable[..., None],
+    clear_account_sentinel_rate_limit: Callable[..., None],
     empty_response_log_message: Callable[..., str],
     iter_sse_bytes: Callable[..., Iterator[bytes]],
     chunk_has_meaningful_output: Callable[[bytes | str], bool],
@@ -182,6 +183,8 @@ def make_build_stream_attempt(
                     config.model,
                     **kwargs,
                 )
+            if not empty_response:
+                clear_account_sentinel_rate_limit(store, selected_account)
             stop_reason = (
                 "empty_response"
                 if empty_response

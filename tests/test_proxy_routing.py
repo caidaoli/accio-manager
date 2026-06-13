@@ -1537,6 +1537,162 @@ class ProxyRoutingTests(unittest.TestCase):
                 ],
             )
 
+    def test_sentinel_rate_limit_marks_account_unavailable_for_following_requests(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [
+                        _upstream_turn_error_stream(
+                            code="555",
+                            message="blocked by sentinel rate limit",
+                        ),
+                    ],
+                    "acc-2": [
+                        _text_claude_stream("第二个账号第一次命中"),
+                        _text_claude_stream("第二个账号第二次命中"),
+                    ],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            store.save(
+                Account(
+                    id="acc-1",
+                    name="账号1",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    fill_priority=0,
+                )
+            )
+            store.save(
+                Account(
+                    id="acc-2",
+                    name="账号2",
+                    access_token="token-2",
+                    refresh_token="refresh-2",
+                    utdid="utdid-2",
+                    fill_priority=10,
+                )
+            )
+
+            first_response, first_text = asyncio.run(
+                _invoke_anthropic_messages_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 256,
+                        "stream": False,
+                        "messages": [{"role": "user", "content": "hello-1"}],
+                    },
+                )
+            )
+
+            second_response, second_text = asyncio.run(
+                _invoke_anthropic_messages_route(
+                    app,
+                    headers={"x-api-key": "admin"},
+                    payload={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 256,
+                        "stream": False,
+                        "messages": [{"role": "user", "content": "hello-2"}],
+                    },
+                )
+            )
+
+            self.assertEqual(first_response.status_code, 200)
+            self.assertEqual(first_response.headers["x-accio-account-id"], "acc-2")
+            self.assertIn("第二个账号第一次命中", first_text)
+            self.assertEqual(second_response.status_code, 200)
+            self.assertEqual(second_response.headers["x-accio-account-id"], "acc-2")
+            self.assertIn("第二个账号第二次命中", second_text)
+            self.assertEqual(fake_client.calls, ["acc-1", "acc-2", "acc-2"])
+
+            limited_account = store.get_account("acc-1")
+            self.assertIsNotNone(limited_account)
+            self.assertFalse(limited_account.auto_disabled)
+            self.assertEqual(limited_account.sentinel_rate_limit_backoff_seconds, 60)
+            self.assertIsNotNone(limited_account.sentinel_rate_limited_until)
+
+    def test_successful_request_clears_expired_sentinel_rate_limit_backoff(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+            fake_client = _FakeProxyClient(
+                {
+                    "acc-1": [_text_claude_stream("冷却恢复后命中")],
+                }
+            )
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=fake_client):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            store = app.state.store
+            store.save(
+                Account(
+                    id="acc-1",
+                    name="账号1",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    fill_priority=0,
+                    sentinel_rate_limited_until=1_000,
+                    sentinel_rate_limit_backoff_seconds=240,
+                )
+            )
+
+            with patch("accio_panel.proxy_selection._now_timestamp", return_value=2_000):
+                response, response_text = asyncio.run(
+                    _invoke_anthropic_messages_route(
+                        app,
+                        headers={"x-api-key": "admin"},
+                        payload={
+                            "model": "claude-sonnet-4-6",
+                            "max_tokens": 256,
+                            "stream": False,
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                    )
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-accio-account-id"], "acc-1")
+            self.assertIn("冷却恢复后命中", response_text)
+
+            recovered_account = store.get_account("acc-1")
+            self.assertIsNotNone(recovered_account)
+            self.assertIsNone(recovered_account.sentinel_rate_limited_until)
+            self.assertEqual(recovered_account.sentinel_rate_limit_backoff_seconds, 0)
+
     def test_anthropic_non_stream_retries_once_after_retryable_quota_exhausted_http_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = Settings(data_dir=Path(temp_dir), database_url="")

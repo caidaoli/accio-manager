@@ -158,6 +158,12 @@ class BaseAccountStore:
                     existing.next_quota_check_at = imported.next_quota_check_at
                     existing.next_quota_check_reason = imported.next_quota_check_reason
                     existing.disabled_models = dict(imported.disabled_models)
+                    existing.sentinel_rate_limited_until = (
+                        imported.sentinel_rate_limited_until
+                    )
+                    existing.sentinel_rate_limit_backoff_seconds = (
+                        imported.sentinel_rate_limit_backoff_seconds
+                    )
                     existing.added_at = imported.added_at or existing.added_at
                     existing.updated_at = now
                     self._write_account_unlocked(existing)

@@ -55,6 +55,14 @@ def is_retryable_quota_exhausted_turn_error(exc: UpstreamTurnError) -> bool:
     return "quota exhausted" in str(exc.error_message or "").strip().lower()
 
 
+def is_sentinel_rate_limit_turn_error(exc: UpstreamTurnError) -> bool:
+    error_code = str(exc.error_code or "").strip()
+    if error_code != "555":
+        return False
+    message = str(exc.error_message or "").strip().lower()
+    return "sentinel" in message and "rate limit" in message
+
+
 def should_retry_upstream_turn_error(exc: UpstreamTurnError) -> bool:
     error_code = str(exc.error_code or "").strip()
     if error_code == "555":

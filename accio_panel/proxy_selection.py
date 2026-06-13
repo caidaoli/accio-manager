@@ -34,6 +34,8 @@ UPSTREAM_QUOTA_EXHAUSTED_AUTO_DISABLED_REASON = (
 UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON = "上游 quota exhausted 后自动恢复重试"
 ABNORMAL_ACCOUNT_RECOVERY_REASON = "异常禁用后定时恢复检查"
 MODEL_COOLDOWN_ERROR_CODE = "MODEL_COOLDOWN"
+SENTINEL_RATE_LIMIT_INITIAL_SECONDS = 60
+SENTINEL_RATE_LIMIT_MAX_SECONDS = 30 * 60
 
 
 class ProxySelectionError(Exception):
@@ -172,6 +174,11 @@ def _import_callback_account(
 
 def _now_timestamp() -> int:
     return int(time.time())
+
+
+def _is_sentinel_rate_limit_cooldown(account: Account) -> bool:
+    cooldown_until = account.sentinel_rate_limited_until
+    return cooldown_until is not None and int(cooldown_until) > _now_timestamp()
 
 
 def _normalize_target_model(
@@ -526,6 +533,7 @@ def _ordered_proxy_candidates_uncached(
         for account in store.list_accounts()
         if account.manual_enabled
         and not account.auto_disabled
+        and not _is_sentinel_rate_limit_cooldown(account)
         and account.id not in excluded_ids
         and not _account_model_disabled_reason(
             account,
@@ -623,6 +631,48 @@ def _is_abnormal_recovery_cooldown(account: Account) -> bool:
     )
 
 
+def _mark_account_sentinel_rate_limited(
+    store: AccountStore,
+    account: Account,
+) -> Account:
+    now_ts = _now_timestamp()
+    updated = store.get_account(account.id) or account
+    previous_backoff = int(updated.sentinel_rate_limit_backoff_seconds or 0)
+    backoff_seconds = (
+        SENTINEL_RATE_LIMIT_INITIAL_SECONDS
+        if previous_backoff <= 0
+        else min(previous_backoff * 2, SENTINEL_RATE_LIMIT_MAX_SECONDS)
+    )
+    updated.sentinel_rate_limit_backoff_seconds = backoff_seconds
+    updated.sentinel_rate_limited_until = now_ts + backoff_seconds
+    updated.updated_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_ts))
+    store.save(updated)
+    return updated
+
+
+def _clear_account_sentinel_rate_limit(
+    store: AccountStore,
+    account: Account,
+) -> Account:
+    if (
+        not account.sentinel_rate_limited_until
+        and not account.sentinel_rate_limit_backoff_seconds
+    ):
+        return account
+    updated = store.get_account(account.id) or account
+    if (
+        not updated.sentinel_rate_limited_until
+        and not updated.sentinel_rate_limit_backoff_seconds
+    ):
+        return updated
+    updated.sentinel_rate_limited_until = None
+    updated.sentinel_rate_limit_backoff_seconds = 0
+    now_ts = _now_timestamp()
+    updated.updated_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_ts))
+    store.save(updated)
+    return updated
+
+
 def _mark_account_quota_exhausted_cooldown(
     store: AccountStore,
     account: Account,
@@ -668,6 +718,7 @@ def _model_cooldown_accounts(
         if (
             _is_upstream_quota_exhausted_cooldown(account)
             or _is_abnormal_recovery_cooldown(account)
+            or _is_sentinel_rate_limit_cooldown(account)
         )
         and not _account_model_disabled_reason(
             account,
@@ -687,6 +738,11 @@ def _cooldown_reset_seconds(accounts: list[Account]) -> int:
         for account in accounts
         if account.next_quota_check_at is not None
     ]
+    reset_values.extend(
+        max(1, int(account.sentinel_rate_limited_until or 0) - now_ts)
+        for account in accounts
+        if _is_sentinel_rate_limit_cooldown(account)
+    )
     if not reset_values:
         return MODEL_COOLDOWN_MIN_SECONDS
     return min(reset_values)

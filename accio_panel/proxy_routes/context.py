@@ -20,6 +20,7 @@ from ..proxy_selection import (
     _anthropic_error_response as _anthropic_error_response_impl,
     _anthropic_selection_error_response as _anthropic_selection_error_response_impl,
     _authorize_proxy_request as _authorize_proxy_request_impl,
+    _clear_account_sentinel_rate_limit as _clear_account_sentinel_rate_limit_impl,
     _disable_account_model_on_empty_response as _disable_account_model_on_empty_response_impl,
     _empty_response_log_message as _empty_response_log_message_impl,
     _extract_proxy_api_key as _extract_proxy_api_key_impl,
@@ -27,6 +28,7 @@ from ..proxy_selection import (
     _gemini_selection_error_response as _gemini_selection_error_response_impl,
     _iter_upstream_sse_bytes as _iter_upstream_sse_bytes_impl,
     _mark_account_quota_exhausted_cooldown as _mark_account_quota_exhausted_cooldown_impl,
+    _mark_account_sentinel_rate_limited as _mark_account_sentinel_rate_limited_impl,
     _native_error_response as _native_error_response_impl,
     _native_selection_error_response as _native_selection_error_response_impl,
     _openai_error_response as _openai_error_response_impl,
@@ -84,6 +86,12 @@ class ProxyRouteContext:
 
     def mark_account_quota_exhausted_cooldown(self, *args: Any, **kwargs: Any):
         return _mark_account_quota_exhausted_cooldown_impl(*args, **kwargs)
+
+    def mark_account_sentinel_rate_limited(self, *args: Any, **kwargs: Any):
+        return _mark_account_sentinel_rate_limited_impl(*args, **kwargs)
+
+    def clear_account_sentinel_rate_limit(self, *args: Any, **kwargs: Any):
+        return _clear_account_sentinel_rate_limit_impl(*args, **kwargs)
 
     def extract_proxy_api_key(self, *args: Any, **kwargs: Any):
         return _extract_proxy_api_key_impl(*args, **kwargs)

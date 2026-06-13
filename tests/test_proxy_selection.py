@@ -6,7 +6,12 @@ from unittest.mock import patch
 from accio_panel.app_settings import PanelSettings
 from accio_panel.models import Account
 from accio_panel.proxy_selection import (
+    SENTINEL_RATE_LIMIT_INITIAL_SECONDS,
+    SENTINEL_RATE_LIMIT_MAX_SECONDS,
     UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON,
+    _mark_account_sentinel_rate_limited,
+    _clear_account_sentinel_rate_limit,
+    _ordered_proxy_candidates_uncached,
     _plan_next_quota_check,
 )
 from accio_panel.quota_scheduler import _quota_scheduler_loop
@@ -18,6 +23,12 @@ class _InMemoryStore:
 
     def list_accounts(self) -> list[Account]:
         return list(self._accounts)
+
+    def get_account(self, account_id: str) -> Account | None:
+        for account in self._accounts:
+            if account.id == account_id:
+                return account
+        return None
 
     def save(self, account: Account) -> Account:
         for index, existing in enumerate(self._accounts):
@@ -40,6 +51,92 @@ class _StopScheduler(Exception):
 
 
 class ProxySelectionTests(unittest.TestCase):
+    def test_sentinel_rate_limit_cooldown_exponentially_backs_off_and_filters_candidates(self):
+        account = Account(
+            id="acc-1",
+            name="账号1",
+            access_token="token-1",
+            refresh_token="refresh-1",
+            utdid="utdid-1",
+        )
+        store = _InMemoryStore([account])
+
+        with patch("accio_panel.proxy_selection._now_timestamp", return_value=1_000):
+            first = _mark_account_sentinel_rate_limited(store, account)
+        self.assertFalse(first.auto_disabled)
+        self.assertEqual(
+            first.sentinel_rate_limit_backoff_seconds,
+            SENTINEL_RATE_LIMIT_INITIAL_SECONDS,
+        )
+        self.assertEqual(first.sentinel_rate_limited_until, 1_060)
+
+        with patch("accio_panel.proxy_selection._now_timestamp", return_value=1_010):
+            second = _mark_account_sentinel_rate_limited(store, first)
+        self.assertEqual(second.sentinel_rate_limit_backoff_seconds, 120)
+        self.assertEqual(second.sentinel_rate_limited_until, 1_130)
+
+        with patch("accio_panel.proxy_selection._now_timestamp", return_value=1_020):
+            third = _mark_account_sentinel_rate_limited(store, second)
+
+        self.assertFalse(third.auto_disabled)
+        self.assertEqual(third.sentinel_rate_limit_backoff_seconds, 240)
+        self.assertEqual(third.sentinel_rate_limited_until, 1_260)
+
+        with patch("accio_panel.proxy_selection._now_timestamp", return_value=1_100):
+            self.assertEqual(
+                _ordered_proxy_candidates_uncached(store, None, None, None),
+                [],
+            )
+        with patch("accio_panel.proxy_selection._now_timestamp", return_value=1_261):
+            self.assertEqual(
+                [
+                    candidate.id
+                    for candidate in _ordered_proxy_candidates_uncached(
+                        store,
+                        None,
+                        None,
+                        None,
+                    )
+                ],
+                ["acc-1"],
+            )
+
+        for index in range(10):
+            with patch(
+                "accio_panel.proxy_selection._now_timestamp",
+                return_value=2_000 + index,
+            ):
+                account = _mark_account_sentinel_rate_limited(store, account)
+        self.assertEqual(
+            account.sentinel_rate_limit_backoff_seconds,
+            SENTINEL_RATE_LIMIT_MAX_SECONDS,
+        )
+
+    def test_sentinel_rate_limit_cooldown_clears_after_success(self):
+        account = Account(
+            id="acc-1",
+            name="账号1",
+            access_token="token-1",
+            refresh_token="refresh-1",
+            utdid="utdid-1",
+            sentinel_rate_limited_until=1_060,
+            sentinel_rate_limit_backoff_seconds=240,
+        )
+        store = _InMemoryStore([account])
+
+        with patch("accio_panel.proxy_selection._now_timestamp", return_value=2_000):
+            cleared = _clear_account_sentinel_rate_limit(store, account)
+        self.assertIsNone(cleared.sentinel_rate_limited_until)
+        self.assertEqual(cleared.sentinel_rate_limit_backoff_seconds, 0)
+
+        with patch("accio_panel.proxy_selection._now_timestamp", return_value=2_010):
+            limited = _mark_account_sentinel_rate_limited(store, cleared)
+        self.assertEqual(
+            limited.sentinel_rate_limit_backoff_seconds,
+            SENTINEL_RATE_LIMIT_INITIAL_SECONDS,
+        )
+        self.assertEqual(limited.sentinel_rate_limited_until, 2_070)
+
     def test_quota_exhausted_recovery_is_capped_when_next_billing_is_far_away(self):
         account = Account(
             id="acc-1",

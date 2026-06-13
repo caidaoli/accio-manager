@@ -153,6 +153,8 @@ class MySQLGateway:
                         next_quota_check_at BIGINT NULL,
                         next_quota_check_reason TEXT NULL,
                         disabled_models LONGTEXT NULL,
+                        sentinel_rate_limited_until BIGINT NULL,
+                        sentinel_rate_limit_backoff_seconds INT NOT NULL DEFAULT 0,
                         added_at VARCHAR(19) NOT NULL,
                         updated_at VARCHAR(19) NOT NULL
                     ) DEFAULT CHARSET=utf8mb4
@@ -180,6 +182,22 @@ class MySQLGateway:
                     """
                     ALTER TABLE accio_accounts
                     ADD COLUMN last_total_quota BIGINT NULL
+                    """,
+                )
+                self._add_column_if_missing(
+                    cursor,
+                    "sentinel_rate_limited_until",
+                    """
+                    ALTER TABLE accio_accounts
+                    ADD COLUMN sentinel_rate_limited_until BIGINT NULL
+                    """,
+                )
+                self._add_column_if_missing(
+                    cursor,
+                    "sentinel_rate_limit_backoff_seconds",
+                    """
+                    ALTER TABLE accio_accounts
+                    ADD COLUMN sentinel_rate_limit_backoff_seconds INT NOT NULL DEFAULT 0
                     """,
                 )
 
@@ -295,6 +313,8 @@ class MySQLGateway:
                         next_quota_check_at,
                         next_quota_check_reason,
                         disabled_models,
+                        sentinel_rate_limited_until,
+                        sentinel_rate_limit_backoff_seconds,
                         added_at,
                         updated_at
                     FROM accio_accounts
@@ -328,9 +348,11 @@ class MySQLGateway:
                         next_quota_check_at,
                         next_quota_check_reason,
                         disabled_models,
+                        sentinel_rate_limited_until,
+                        sentinel_rate_limit_backoff_seconds,
                         added_at,
                         updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                         name = VALUES(name),
                         access_token = VALUES(access_token),
@@ -348,6 +370,8 @@ class MySQLGateway:
                         next_quota_check_at = VALUES(next_quota_check_at),
                         next_quota_check_reason = VALUES(next_quota_check_reason),
                         disabled_models = VALUES(disabled_models),
+                        sentinel_rate_limited_until = VALUES(sentinel_rate_limited_until),
+                        sentinel_rate_limit_backoff_seconds = VALUES(sentinel_rate_limit_backoff_seconds),
                         added_at = VALUES(added_at),
                         updated_at = VALUES(updated_at)
                     """,
@@ -372,6 +396,8 @@ class MySQLGateway:
                             payload.get("disabledModels") or {},
                             ensure_ascii=False,
                         ),
+                        payload.get("sentinelRateLimitedUntil"),
+                        int(payload.get("sentinelRateLimitBackoffSeconds") or 0),
                         str(payload.get("addedAt") or ""),
                         str(payload.get("updatedAt") or ""),
                     ),
@@ -547,6 +573,11 @@ def _account_row_to_payload(row: dict[str, Any]) -> dict[str, object]:
         "nextQuotaCheckAt": row.get("next_quota_check_at"),
         "nextQuotaCheckReason": row.get("next_quota_check_reason"),
         "disabledModels": disabled_models if isinstance(disabled_models, (dict, list)) else {},
+        "sentinelRateLimitedUntil": row.get("sentinel_rate_limited_until"),
+        "sentinelRateLimitBackoffSeconds": row.get(
+            "sentinel_rate_limit_backoff_seconds"
+        )
+        or 0,
         "addedAt": str(row.get("added_at") or ""),
         "updatedAt": str(row.get("updated_at") or ""),
     }

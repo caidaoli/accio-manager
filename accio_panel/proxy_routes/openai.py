@@ -25,6 +25,7 @@ from ..openai_proxy import (
 from ..upstream_support import (
     extract_upstream_turn_error_from_chunk as _extract_upstream_turn_error_from_chunk,
     is_retryable_quota_exhausted_turn_error as _is_retryable_quota_exhausted_turn_error,
+    is_sentinel_rate_limit_turn_error as _is_sentinel_rate_limit_turn_error,
     make_upstream_attempt_logger as _make_upstream_attempt_logger,
     openai_chat_chunk_has_meaningful_output as _openai_chat_chunk_has_meaningful_output,
     openai_responses_chunk_has_meaningful_output as _openai_responses_chunk_has_meaningful_output,
@@ -61,6 +62,8 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
     _should_disable_model_on_empty_response = context.should_disable_model_on_empty_response
     _disable_account_model_on_empty_response = context.disable_account_model_on_empty_response
     _mark_account_quota_exhausted_cooldown = context.mark_account_quota_exhausted_cooldown
+    _mark_account_sentinel_rate_limited = context.mark_account_sentinel_rate_limited
+    _clear_account_sentinel_rate_limit = context.clear_account_sentinel_rate_limit
     _openai_error_response = context.openai_error_response
     _openai_selection_error_response = context.openai_selection_error_response
 
@@ -279,6 +282,7 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                 messages_count=messages_count,
                 record_attempt=_record_attempt,
                 disable_account_model_on_empty_response=_disable_account_model_on_empty_response,
+                clear_account_sentinel_rate_limit=_clear_account_sentinel_rate_limit,
                 empty_response_log_message=_empty_response_log_message,
                 iter_sse_bytes=iter_openai_responses_sse_bytes,
                 chunk_has_meaningful_output=_openai_responses_chunk_has_meaningful_output,
@@ -334,6 +338,8 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                         )
                     if _is_retryable_quota_exhausted_turn_error(exc):
                         _mark_account_quota_exhausted_cooldown(store, stream_account)
+                    elif _is_sentinel_rate_limit_turn_error(exc):
+                        _mark_account_sentinel_rate_limited(store, stream_account)
                     retryable_turn_error = True
                     has_meaningful_output = False
                 if has_meaningful_output:
@@ -439,6 +445,8 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                     )
                 if _is_retryable_quota_exhausted_turn_error(exc):
                     _mark_account_quota_exhausted_cooldown(store, account)
+                elif _is_sentinel_rate_limit_turn_error(exc):
+                    _mark_account_sentinel_rate_limited(store, account)
                 next_retry_reason = "upstream_turn_error"
             else:
                 usage = response_payload.get("usage") if isinstance(response_payload, dict) else {}
@@ -576,6 +584,9 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
             current_attempt += 1
             current_attempt_started_at = retry_started_at
             current_retry_reason = next_retry_reason
+
+        if not output_summary["empty_response"]:
+            _clear_account_sentinel_rate_limit(store, account)
 
         _record_attempt(
             account,
@@ -863,6 +874,7 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                 messages_count=messages_count,
                 record_attempt=_record_attempt,
                 disable_account_model_on_empty_response=_disable_account_model_on_empty_response,
+                clear_account_sentinel_rate_limit=_clear_account_sentinel_rate_limit,
                 empty_response_log_message=_empty_response_log_message,
                 iter_sse_bytes=iter_openai_chat_sse_bytes,
                 chunk_has_meaningful_output=_openai_chat_chunk_has_meaningful_output,
@@ -915,6 +927,8 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                         )
                     if _is_retryable_quota_exhausted_turn_error(exc):
                         _mark_account_quota_exhausted_cooldown(store, stream_account)
+                    elif _is_sentinel_rate_limit_turn_error(exc):
+                        _mark_account_sentinel_rate_limited(store, stream_account)
                     retryable_turn_error = True
                     has_meaningful_output = False
                 if has_meaningful_output:
@@ -1020,6 +1034,8 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
                     )
                 if _is_retryable_quota_exhausted_turn_error(exc):
                     _mark_account_quota_exhausted_cooldown(store, account)
+                elif _is_sentinel_rate_limit_turn_error(exc):
+                    _mark_account_sentinel_rate_limited(store, account)
                 next_retry_reason = "upstream_turn_error"
             else:
                 usage = response_payload.get("usage") if isinstance(response_payload, dict) else {}
@@ -1157,6 +1173,9 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
             current_attempt += 1
             current_attempt_started_at = retry_started_at
             current_retry_reason = next_retry_reason
+
+        if not output_summary["empty_response"]:
+            _clear_account_sentinel_rate_limit(store, account)
 
         _record_attempt(
             account,

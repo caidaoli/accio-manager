@@ -34,6 +34,13 @@ def normalize_fill_priority(value: Any) -> int:
     return max(0, priority)
 
 
+def normalize_non_negative_int(value: Any) -> int:
+    try:
+        return max(0, int(str(value).strip()))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
 def normalize_model_key(value: Any) -> str:
     return str(value or "").strip().lower()
 
@@ -78,6 +85,8 @@ class Account:
     next_quota_check_at: int | None = None
     next_quota_check_reason: str | None = None
     disabled_models: dict[str, str] = field(default_factory=dict)
+    sentinel_rate_limited_until: int | None = None
+    sentinel_rate_limit_backoff_seconds: int = 0
     added_at: str = field(default_factory=now_text)
     updated_at: str = field(default_factory=now_text)
 
@@ -103,6 +112,12 @@ class Account:
             disabled_models=normalize_disabled_models(
                 data.get("disabledModels", data.get("disabledModelReasons"))
             ),
+            sentinel_rate_limited_until=normalize_timestamp(
+                data.get("sentinelRateLimitedUntil")
+            ),
+            sentinel_rate_limit_backoff_seconds=normalize_non_negative_int(
+                data.get("sentinelRateLimitBackoffSeconds")
+            ),
             added_at=str(data.get("addedAt") or now_text()),
             updated_at=str(data.get("updatedAt") or data.get("addedAt") or now_text()),
         )
@@ -126,6 +141,8 @@ class Account:
             "nextQuotaCheckAt": self.next_quota_check_at,
             "nextQuotaCheckReason": self.next_quota_check_reason,
             "disabledModels": self.disabled_models,
+            "sentinelRateLimitedUntil": self.sentinel_rate_limited_until,
+            "sentinelRateLimitBackoffSeconds": self.sentinel_rate_limit_backoff_seconds,
             "addedAt": self.added_at,
             "updatedAt": self.updated_at,
         }

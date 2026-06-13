@@ -25,6 +25,7 @@ from ..upstream_support import (
     extract_upstream_turn_error_from_chunk as _extract_upstream_turn_error_from_chunk,
     gemini_stream_chunk_has_meaningful_output as _gemini_stream_chunk_has_meaningful_output,
     is_retryable_quota_exhausted_turn_error as _is_retryable_quota_exhausted_turn_error,
+    is_sentinel_rate_limit_turn_error as _is_sentinel_rate_limit_turn_error,
     make_upstream_attempt_logger as _make_upstream_attempt_logger,
     native_sse_chunk_has_meaningful_output as _native_sse_chunk_has_meaningful_output,
     prefetch_stream_until_meaningful as _prefetch_stream_until_meaningful,
@@ -59,6 +60,8 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
     _should_disable_model_on_empty_response = context.should_disable_model_on_empty_response
     _disable_account_model_on_empty_response = context.disable_account_model_on_empty_response
     _mark_account_quota_exhausted_cooldown = context.mark_account_quota_exhausted_cooldown
+    _mark_account_sentinel_rate_limited = context.mark_account_sentinel_rate_limited
+    _clear_account_sentinel_rate_limit = context.clear_account_sentinel_rate_limit
     _extract_proxy_api_key = context.extract_proxy_api_key
     _iter_upstream_sse_bytes = context.iter_upstream_sse_bytes
     _gemini_error_response = context.gemini_error_response
@@ -246,6 +249,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                 messages_count=messages_count,
                 record_attempt=_record_attempt,
                 disable_account_model_on_empty_response=_disable_account_model_on_empty_response,
+                clear_account_sentinel_rate_limit=_clear_account_sentinel_rate_limit,
                 empty_response_log_message=_empty_response_log_message,
                 iter_sse_bytes=iter_gemini_generate_content_sse_bytes,
                 chunk_has_meaningful_output=_gemini_stream_chunk_has_meaningful_output,
@@ -297,6 +301,8 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                         )
                     if _is_retryable_quota_exhausted_turn_error(exc):
                         _mark_account_quota_exhausted_cooldown(store, stream_account)
+                    elif _is_sentinel_rate_limit_turn_error(exc):
+                        _mark_account_sentinel_rate_limited(store, stream_account)
                     retryable_turn_error = True
                     has_meaningful_output = False
                 if has_meaningful_output:
@@ -401,6 +407,8 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                     )
                 if _is_retryable_quota_exhausted_turn_error(exc):
                     _mark_account_quota_exhausted_cooldown(store, account)
+                elif _is_sentinel_rate_limit_turn_error(exc):
+                    _mark_account_sentinel_rate_limited(store, account)
                 next_retry_reason = "upstream_turn_error"
             except ValueError as exc:
                 usage_stats_store.record_message(
@@ -594,6 +602,9 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
             current_attempt += 1
             current_attempt_started_at = retry_started_at
             current_retry_reason = next_retry_reason
+
+        if not output_summary["empty_response"]:
+            _clear_account_sentinel_rate_limit(store, account)
 
         finish_reason = extract_gemini_finish_reason(response_payload)
         _record_attempt(
@@ -805,6 +816,7 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                 None,
             )
             if turn_error is None:
+                _clear_account_sentinel_rate_limit(store, stream_account)
                 extra_fields = (
                     {"retryReason": stream_retry_reason}
                     if stream_retry_reason
@@ -852,6 +864,8 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
                 )
             if _is_retryable_quota_exhausted_turn_error(turn_error):
                 _mark_account_quota_exhausted_cooldown(store, stream_account)
+            elif _is_sentinel_rate_limit_turn_error(turn_error):
+                _mark_account_sentinel_rate_limited(store, stream_account)
 
             try:
                 retry_account, retry_quota = await asyncio.to_thread(
