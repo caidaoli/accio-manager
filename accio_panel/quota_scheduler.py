@@ -22,11 +22,19 @@ async def _quota_scheduler_loop(application: FastAPI) -> None:
     client: AccioClient = application.state.client
     panel_settings_store: PanelSettingsStore = application.state.panel_settings_store
 
-    # 启动时重置所有账号的巡检时间，确保首轮 tick 立即触发全量检查
+    # 启动时分批重置账号巡检时间，避免惊群效应
+    # 策略：每批 10 个账号，间隔 2 秒，分散上游 API 压力
     now_ts = _now_timestamp()
-    for account in store.list_accounts():
+    accounts = store.list_accounts()
+    batch_size = 10
+    stagger_interval = 2  # 秒
+
+    for i, account in enumerate(accounts):
         if account.next_quota_check_at is not None and account.next_quota_check_at > now_ts:
-            account.next_quota_check_at = now_ts
+            # 计算分散时间：第 0-9 个账号在 now，第 10-19 个在 now+2s，依此类推
+            batch_index = i // batch_size
+            stagger_offset = batch_index * stagger_interval
+            account.next_quota_check_at = now_ts + stagger_offset
             store.save(account)
 
     while True:
