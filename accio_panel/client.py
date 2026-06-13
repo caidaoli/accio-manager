@@ -18,11 +18,11 @@ class AccioClient:
         self.settings = settings
         self._session = requests.Session()
 
-        # 连接池优化：提升并发能力和容错性
+        # 连接池优化：只对安全读取请求做传输层重试。
         retry_strategy = Retry(
             total=3,
             status_forcelist=[502, 503, 504],
-            allowed_methods=["GET", "POST"],
+            allowed_methods=["GET"],
             backoff_factor=0.3,  # 0.3s, 0.6s, 1.2s
         )
         adapter = HTTPAdapter(

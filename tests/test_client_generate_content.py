@@ -7,6 +7,14 @@ from accio_panel.models import Account
 
 
 class ClientGenerateContentTests(unittest.TestCase):
+    def test_session_retry_policy_does_not_replay_post_requests(self):
+        client = AccioClient(Settings())
+
+        retry_policy = client._session.get_adapter("https://example.com").max_retries
+
+        self.assertIn("GET", retry_policy.allowed_methods)
+        self.assertNotIn("POST", retry_policy.allowed_methods)
+
     def test_generate_content_uses_reqtxt_headers(self):
         client = AccioClient(Settings())
         client._session.post = Mock()

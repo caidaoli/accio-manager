@@ -40,6 +40,25 @@ async def _run_quota_check_batch(
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _next_scheduler_sleep_seconds(store: AccountStore) -> int:
+    now_ts = _now_timestamp()
+    next_check_times = [
+        int(account.next_quota_check_at)
+        for account in store.list_accounts()
+        if account.next_quota_check_at is not None
+        and (
+            account.manual_enabled
+            or bool(str(account.auto_disabled_reason or "").strip())
+        )
+    ]
+    if not next_check_times:
+        return SCHEDULER_TICK_SECONDS
+    return min(
+        SCHEDULER_TICK_SECONDS,
+        max(0, min(next_check_times) - now_ts),
+    )
+
+
 async def _quota_scheduler_loop(application: FastAPI) -> None:
     store: AccountStore = application.state.store
     client: AccioClient = application.state.client
@@ -111,4 +130,4 @@ async def _quota_scheduler_loop(application: FastAPI) -> None:
                 panel_settings,
             )
 
-        await asyncio.sleep(SCHEDULER_TICK_SECONDS)
+        await asyncio.sleep(_next_scheduler_sleep_seconds(store))

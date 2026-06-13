@@ -128,6 +128,54 @@ class QuotaSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, [f"acc-{index}" for index in range(10)])
 
+    async def test_scheduler_sleeps_until_next_startup_stagger_batch(self):
+        accounts = [
+            Account(
+                id=f"acc-{index}",
+                name=f"账号{index}",
+                access_token=f"access-{index}",
+                refresh_token=f"refresh-{index}",
+                utdid=f"utdid-{index}",
+                manual_enabled=True,
+                next_quota_check_at=1_003_600,
+            )
+            for index in range(15)
+        ]
+        store = _InMemoryStore(accounts)
+        application = SimpleNamespace(
+            state=SimpleNamespace(
+                store=store,
+                client=object(),
+                panel_settings_store=_FixedPanelSettingsStore(PanelSettings()),
+            )
+        )
+        calls: list[str] = []
+        sleeps: list[float] = []
+
+        def fake_query_quota_with_refresh_fallback(_store, _client, account, _settings):
+            calls.append(account.id)
+            account.next_quota_check_at = 1_000_900
+            store.save(account)
+            return account, {"success": True, "message": ""}
+
+        async def stop_after_first_sleep(delay: float):
+            sleeps.append(delay)
+            raise _StopScheduler()
+
+        with (
+            patch("accio_panel.quota_scheduler._now_timestamp", return_value=1_000_000),
+            patch(
+                "accio_panel.quota_scheduler._query_quota_with_refresh_fallback",
+                side_effect=fake_query_quota_with_refresh_fallback,
+            ),
+            patch("accio_panel.quota_scheduler.asyncio.sleep", side_effect=stop_after_first_sleep),
+        ):
+            with self.assertRaises(_StopScheduler):
+                await _quota_scheduler_loop(application)
+
+        self.assertEqual(calls, [f"acc-{index}" for index in range(10)])
+        self.assertEqual(sleeps, [2])
+
     async def test_scheduler_recovery_uses_same_quota_refresh_path_for_abnormal_accounts(
         self,
     ):
