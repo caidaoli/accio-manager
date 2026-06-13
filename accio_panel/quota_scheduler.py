@@ -15,6 +15,29 @@ from .proxy_selection import (
 from .store import AccountStore
 
 SCHEDULER_TICK_SECONDS = QUOTA_SCHEDULER_TICK_SECONDS
+QUOTA_CHECK_BATCH_SIZE = 10
+QUOTA_CHECK_BATCH_INTERVAL_SECONDS = 2
+
+
+async def _run_quota_check_batch(
+    store: AccountStore,
+    client: AccioClient,
+    accounts: list[Account],
+    panel_settings,
+) -> None:
+    loop = asyncio.get_event_loop()
+    tasks = [
+        loop.run_in_executor(
+            None,
+            _query_quota_with_refresh_fallback,
+            store,
+            client,
+            account,
+            panel_settings,
+        )
+        for account in accounts
+    ]
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _quota_scheduler_loop(application: FastAPI) -> None:
@@ -26,14 +49,12 @@ async def _quota_scheduler_loop(application: FastAPI) -> None:
     # 策略：每批 10 个账号，间隔 2 秒，分散上游 API 压力
     now_ts = _now_timestamp()
     accounts = store.list_accounts()
-    batch_size = 10
-    stagger_interval = 2  # 秒
 
     for i, account in enumerate(accounts):
         if account.next_quota_check_at is not None and account.next_quota_check_at > now_ts:
             # 计算分散时间：第 0-9 个账号在 now，第 10-19 个在 now+2s，依此类推
-            batch_index = i // batch_size
-            stagger_offset = batch_index * stagger_interval
+            batch_index = i // QUOTA_CHECK_BATCH_SIZE
+            stagger_offset = batch_index * QUOTA_CHECK_BATCH_INTERVAL_SECONDS
             account.next_quota_check_at = now_ts + stagger_offset
             store.save(account)
 
@@ -70,19 +91,16 @@ async def _quota_scheduler_loop(application: FastAPI) -> None:
                 due_accounts.append(account)
 
         if due_accounts:
-            loop = asyncio.get_event_loop()
-            tasks = [
-                loop.run_in_executor(
-                    None,
-                    _query_quota_with_refresh_fallback,
+            for start in range(0, len(due_accounts), QUOTA_CHECK_BATCH_SIZE):
+                batch = due_accounts[start : start + QUOTA_CHECK_BATCH_SIZE]
+                await _run_quota_check_batch(
                     store,
                     client,
-                    account,
+                    batch,
                     panel_settings,
                 )
-                for account in due_accounts
-            ]
-            await asyncio.gather(*tasks, return_exceptions=True)
+                if start + QUOTA_CHECK_BATCH_SIZE < len(due_accounts):
+                    await asyncio.sleep(QUOTA_CHECK_BATCH_INTERVAL_SECONDS)
 
         for account in abnormal_recovery_accounts:
             await asyncio.to_thread(

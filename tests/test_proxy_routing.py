@@ -1691,10 +1691,6 @@ class ProxyRoutingTests(unittest.TestCase):
                 )
             )
 
-            # 清理代理缓存以确保账号状态变更立即生效
-            if hasattr(app.state, "proxy_cache"):
-                app.state.proxy_cache.invalidate()
-
             second_response, second_text = asyncio.run(
                 _invoke_anthropic_messages_route(
                     app,

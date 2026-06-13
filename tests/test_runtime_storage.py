@@ -10,6 +10,7 @@ from accio_panel.config import Settings
 from accio_panel.models import Account
 from accio_panel.mysql_storage import MySQLAccountStore
 from accio_panel.persistence import create_runtime_stores
+from accio_panel.proxy_cache import ProxyCandidateCache
 from accio_panel.proxy_selection import _ordered_proxy_candidates
 from accio_panel.store import AccountStore
 
@@ -287,12 +288,47 @@ class RuntimeStorageTests(unittest.TestCase):
             "updatedAt": "2026-04-04 01:01:00",
         }
 
-        # 使缓存失效以读取外部变更（MySQL 缓存 TTL 优化的权衡）
-        store._accounts_cache = None
-        store._accounts_by_id = {}
-
         self.assertEqual(
             [account.id for account in _ordered_proxy_candidates(store)],
+            ["acc-1"],
+        )
+
+    def test_mysql_account_store_bypasses_proxy_candidate_cache_for_external_changes(self):
+        gateway = _FakeGateway()
+        gateway.accounts["acc-1"] = {
+            "id": "acc-1",
+            "name": "数据库账号",
+            "accessToken": "access-1",
+            "refreshToken": "refresh-1",
+            "utdid": "utdid-1",
+            "fillPriority": 100,
+            "expiresAt": None,
+            "cookie": None,
+            "manualEnabled": False,
+            "autoDisabled": False,
+            "autoDisabledReason": None,
+            "lastQuotaCheckAt": None,
+            "lastRemainingQuota": 20,
+            "lastTotalQuota": 20,
+            "nextQuotaCheckAt": None,
+            "nextQuotaCheckReason": None,
+            "disabledModels": {},
+            "addedAt": "2026-04-04 01:00:00",
+            "updatedAt": "2026-04-04 01:00:00",
+        }
+        store = MySQLAccountStore(gateway)
+        cache = ProxyCandidateCache(ttl=60.0)
+
+        self.assertEqual(_ordered_proxy_candidates(store, cache=cache), [])
+
+        gateway.accounts["acc-1"] = {
+            **gateway.accounts["acc-1"],
+            "manualEnabled": True,
+            "updatedAt": "2026-04-04 01:01:00",
+        }
+
+        self.assertEqual(
+            [account.id for account in _ordered_proxy_candidates(store, cache=cache)],
             ["acc-1"],
         )
 

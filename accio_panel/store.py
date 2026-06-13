@@ -19,6 +19,7 @@ from .utils import new_utdid
 class BaseAccountStore:
     def __init__(self):
         self._lock = threading.RLock()
+        self._revision = 0
         self._ensure_storage()
 
     def _ensure_storage(self) -> None:
@@ -32,6 +33,13 @@ class BaseAccountStore:
 
     def _delete_account_unlocked(self, account_id: str) -> bool:
         raise NotImplementedError
+
+    @property
+    def revision(self) -> int:
+        return self._revision
+
+    def _mark_changed_unlocked(self) -> None:
+        self._revision += 1
 
     def _normalize_account(self, account: Account) -> bool:
         changed = False
@@ -69,6 +77,7 @@ class BaseAccountStore:
     def save(self, account: Account) -> Account:
         with self._lock:
             self._write_account_unlocked(account)
+            self._mark_changed_unlocked()
             return account
 
     def _next_account_name(self, accounts: list[Account]) -> str:
@@ -152,6 +161,7 @@ class BaseAccountStore:
                     existing.added_at = imported.added_at or existing.added_at
                     existing.updated_at = now
                     self._write_account_unlocked(existing)
+                    self._mark_changed_unlocked()
                     updated_count += 1
                     continue
 
@@ -160,6 +170,7 @@ class BaseAccountStore:
 
                 imported.updated_at = now
                 self._write_account_unlocked(imported)
+                self._mark_changed_unlocked()
                 accounts.append(imported)
                 existing_ids.add(imported.id)
                 created_count += 1
@@ -191,6 +202,7 @@ class BaseAccountStore:
                     account.cookie = cookie or account.cookie
                     account.updated_at = now
                     self._write_account_unlocked(account)
+                    self._mark_changed_unlocked()
                     return account, False
 
                 if account.refresh_token == refresh_token:
@@ -199,6 +211,7 @@ class BaseAccountStore:
                     account.cookie = cookie or account.cookie
                     account.updated_at = now
                     self._write_account_unlocked(account)
+                    self._mark_changed_unlocked()
                     return account, False
 
                 if cookie and account.cookie and account.cookie == cookie:
@@ -207,6 +220,7 @@ class BaseAccountStore:
                     account.expires_at = normalize_timestamp(expires_at)
                     account.updated_at = now
                     self._write_account_unlocked(account)
+                    self._mark_changed_unlocked()
                     return account, False
 
             existing_ids = {account.id for account in accounts if account.id}
@@ -224,6 +238,7 @@ class BaseAccountStore:
             while account.id in existing_ids:
                 account.id = uuid.uuid4().hex
             self._write_account_unlocked(account)
+            self._mark_changed_unlocked()
             return account, True
 
     def update_tokens(
@@ -243,6 +258,7 @@ class BaseAccountStore:
             account.expires_at = normalize_timestamp(expires_at)
             account.updated_at = now_text()
             self._write_account_unlocked(account)
+            self._mark_changed_unlocked()
             return account
 
     def rename(self, account_id: str, name: str) -> Account | None:
@@ -253,6 +269,7 @@ class BaseAccountStore:
             account.name = name
             account.updated_at = now_text()
             self._write_account_unlocked(account)
+            self._mark_changed_unlocked()
             return account
 
     def set_fill_priority(self, account_id: str, fill_priority: int) -> Account | None:
@@ -263,6 +280,7 @@ class BaseAccountStore:
             account.fill_priority = normalize_fill_priority(fill_priority)
             account.updated_at = now_text()
             self._write_account_unlocked(account)
+            self._mark_changed_unlocked()
             return account
 
     def set_manual_enabled(self, account_id: str, enabled: bool) -> Account | None:
@@ -275,6 +293,7 @@ class BaseAccountStore:
                 account.auto_disabled_reason = None
             account.updated_at = now_text()
             self._write_account_unlocked(account)
+            self._mark_changed_unlocked()
             return account
 
     def set_auto_disabled(
@@ -291,6 +310,7 @@ class BaseAccountStore:
             account.auto_disabled_reason = reason if auto_disabled else None
             account.updated_at = now_text()
             self._write_account_unlocked(account)
+            self._mark_changed_unlocked()
             return account
 
     def set_disabled_model(
@@ -312,6 +332,7 @@ class BaseAccountStore:
             account.disabled_models[normalized_model] = str(reason or "").strip()
             account.updated_at = now_text()
             self._write_account_unlocked(account)
+            self._mark_changed_unlocked()
             return account
 
     def clear_disabled_models(self, account_id: str) -> Account | None:
@@ -323,6 +344,7 @@ class BaseAccountStore:
             account.disabled_models = {}
             account.updated_at = now_text()
             self._write_account_unlocked(account)
+            self._mark_changed_unlocked()
             return account
 
     def _is_abnormal_auto_disabled_unlocked(self, account: Account) -> bool:
@@ -364,6 +386,7 @@ class BaseAccountStore:
 
             for account in matched_accounts:
                 if self._delete_account_unlocked(account.id):
+                    self._mark_changed_unlocked()
                     deleted_ids.append(account.id)
                     deleted_names.append(account.name)
                     continue
@@ -380,7 +403,10 @@ class BaseAccountStore:
 
     def delete(self, account_id: str) -> bool:
         with self._lock:
-            return self._delete_account_unlocked(account_id)
+            deleted = self._delete_account_unlocked(account_id)
+            if deleted:
+                self._mark_changed_unlocked()
+            return deleted
 
 
 class AccountStore(BaseAccountStore):

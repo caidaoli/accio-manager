@@ -19,6 +19,7 @@ class ProxyCandidateCache:
         """
         self._cache: dict[str, list[Account]] = {}
         self._cache_time: dict[str, float] = {}
+        self._cache_revision: dict[str, int | None] = {}
         self._ttl = ttl
 
     def _make_key(
@@ -57,15 +58,22 @@ class ProxyCandidateCache:
         Returns:
             缓存命中时返回账号列表，未命中返回 None
         """
+        if getattr(store, "bypass_proxy_candidate_cache", False):
+            return filter_func(store, model, provider, exclude_account_ids)
+
         exclude_frozen = frozenset(exclude_account_ids) if exclude_account_ids else None
         cache_key = self._make_key(model, provider, exclude_frozen)
 
         now = time.time()
+        store_revision = getattr(store, "revision", None)
 
         # 检查缓存是否有效
         if cache_key in self._cache:
             cache_age = now - self._cache_time[cache_key]
-            if cache_age < self._ttl:
+            if (
+                cache_age < self._ttl
+                and self._cache_revision.get(cache_key) == store_revision
+            ):
                 return self._cache[cache_key]
 
         # 缓存未命中，调用过滤函数
@@ -74,6 +82,7 @@ class ProxyCandidateCache:
         # 更新缓存
         self._cache[cache_key] = candidates
         self._cache_time[cache_key] = now
+        self._cache_revision[cache_key] = store_revision
 
         return candidates
 
@@ -89,6 +98,7 @@ class ProxyCandidateCache:
             # 清空全部缓存
             self._cache.clear()
             self._cache_time.clear()
+            self._cache_revision.clear()
             return
 
         # 按前缀匹配删除
@@ -99,6 +109,7 @@ class ProxyCandidateCache:
         for key in keys_to_delete:
             self._cache.pop(key, None)
             self._cache_time.pop(key, None)
+            self._cache_revision.pop(key, None)
 
     def get_stats(self) -> dict[str, int]:
         """获取缓存统计信息"""
@@ -125,4 +136,5 @@ class ProxyCandidateCache:
         for key in expired_keys:
             self._cache.pop(key, None)
             self._cache_time.pop(key, None)
+            self._cache_revision.pop(key, None)
         return len(expired_keys)

@@ -86,6 +86,48 @@ class ProxySelectionTests(unittest.TestCase):
 
 
 class QuotaSchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scheduler_limits_due_account_checks_to_startup_batch_size(self):
+        accounts = [
+            Account(
+                id=f"acc-{index}",
+                name=f"账号{index}",
+                access_token=f"access-{index}",
+                refresh_token=f"refresh-{index}",
+                utdid=f"utdid-{index}",
+                manual_enabled=True,
+                next_quota_check_at=None,
+            )
+            for index in range(25)
+        ]
+        application = SimpleNamespace(
+            state=SimpleNamespace(
+                store=_InMemoryStore(accounts),
+                client=object(),
+                panel_settings_store=_FixedPanelSettingsStore(PanelSettings()),
+            )
+        )
+        calls: list[str] = []
+
+        def fake_query_quota_with_refresh_fallback(_store, _client, account, _settings):
+            calls.append(account.id)
+            return account, {"success": True, "message": ""}
+
+        async def stop_after_first_tick(_: float):
+            raise _StopScheduler()
+
+        with (
+            patch("accio_panel.quota_scheduler._now_timestamp", return_value=1_000_000),
+            patch(
+                "accio_panel.quota_scheduler._query_quota_with_refresh_fallback",
+                side_effect=fake_query_quota_with_refresh_fallback,
+            ),
+            patch("accio_panel.quota_scheduler.asyncio.sleep", side_effect=stop_after_first_tick),
+        ):
+            with self.assertRaises(_StopScheduler):
+                await _quota_scheduler_loop(application)
+
+        self.assertEqual(calls, [f"acc-{index}" for index in range(10)])
+
     async def test_scheduler_recovery_uses_same_quota_refresh_path_for_abnormal_accounts(
         self,
     ):
