@@ -32,24 +32,52 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .
 
-      - name: Cache Nuitka compilation
+      - name: Cache Nuitka & ccache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/Nuitka
-          key: nuitka-${{ runner.os }}-${{ hashFiles('accio_panel/**/*.py', 'main.py') }}
+          path: |
+            ~/.cache/Nuitka
+            ~/.cache/ccache
+          key: nuitka-${{ runner.os }}-py3.12-nuitka4.1.2-${{ hashFiles('pyproject.toml', 'uv.lock', 'accio_panel/**/*.py', 'main.py') }}
           restore-keys: |
-            nuitka-${{ runner.os }}-
+            nuitka-${{ runner.os }}-py3.12-nuitka4.1.2-
 
       - name: Build onefile binary with Nuitka
         uses: Nuitka/Nuitka-Action@v1.3
         with:
-          nuitka-version: "4.0"
+          nuitka-version: "4.1.2"
           script-name: main.py
           mode: onefile
           output-dir: build
           output-file: accio-panel-linux-amd64-${{ github.ref_name }}
           include-package-data: accio_panel
+          onefile-tempdir-spec: "{CACHE_DIR}/accio-panel/${{ github.ref_name }}"
+          lto: yes
+          jobs: 4
           assume-yes-for-downloads: true
+
+      - name: Smoke test binary
+        env:
+          ACCIO_AUTO_OPEN_BROWSER: "false"
+          ACCIO_CALLBACK_PORT: "4097"
+          ACCIO_DATA_DIR: ${{ runner.temp }}/accio-smoke-data
+        run: |
+          set -euo pipefail
+          BIN=build/accio-panel-linux-amd64-${{ github.ref_name }}
+          chmod +x "$BIN"
+          mkdir -p "$ACCIO_DATA_DIR"
+          "$BIN" &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${ACCIO_CALLBACK_PORT}/health" >/dev/null; then
+              echo "smoke test OK"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "smoke test FAILED: /health not reachable within 30s" >&2
+          exit 1
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
