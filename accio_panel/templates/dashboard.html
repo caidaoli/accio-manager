@@ -34,7 +34,7 @@
     }
 
     .shell {
-      width: min(1200px, calc(100% - 32px));
+      width: calc(100% - 32px);
       margin: 28px auto 40px;
     }
 
@@ -730,10 +730,7 @@
                 <td>{{ item.durationMs }}ms</td>
                 <td>{{ item.message }}</td>
                 <td>
-                  <details>
-                    <summary>查看</summary>
-                    <pre style="white-space: pre-wrap; word-break: break-word;">{{ item.detailJson }}</pre>
-                  </details>
+                  <button class="mini-action" type="button" onclick='openLogDetailModal({{ item.detailJson }})'>▶ 查看</button>
                 </td>
               </tr>
               {% endfor %}
@@ -1055,6 +1052,19 @@
     </div>
   </div>
 
+  <div id="log-detail-modal" class="modal" onclick="closeModalOnMask(event, 'log-detail-modal')">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div class="modal-title">日志详情</div>
+        <button class="modal-close" type="button" onclick="closeModal('log-detail-modal')">×</button>
+      </div>
+      <pre id="log-detail-content" style="white-space: pre-wrap; word-break: break-word; margin: 0; padding: 16px; border-radius: 16px; background: #f8fbfe; border: 1px solid rgba(20,50,74,0.06); font-size: 13px; line-height: 1.6; max-height: 70vh; overflow: auto;"></pre>
+      <div class="actions" style="margin-top:16px;">
+        <button class="action" type="button" onclick="closeModal('log-detail-modal')">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     /* ── 通用前端分页器 ── */
     function createClientPager(config) {
@@ -1161,6 +1171,23 @@
         closeModal(id);
       }
     }
+
+    function openLogDetailModal(data) {
+      var content = document.getElementById('log-detail-content');
+      content.textContent = JSON.stringify(data, null, 2);
+      openModal('log-detail-modal');
+    }
+
+    document.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape') {
+        ['log-detail-modal', 'detail-modal'].forEach(function(id) {
+          var el = document.getElementById(id);
+          if (el && el.classList.contains('show')) {
+            closeModal(id);
+          }
+        });
+      }
+    });
 
     function openImportDialog() {
       document.getElementById('import-files-input').click();

@@ -607,38 +607,31 @@ def install_gemini_routes(context: ProxyRouteContext) -> None:
             _clear_account_sentinel_rate_limit(store, account)
 
         finish_reason = extract_gemini_finish_reason(response_payload)
-        _record_attempt(
-            account,
-            quota,
-            request_id,
-            attempt=current_attempt,
-            stream=False,
-            success=not bool(output_summary["empty_response"]),
-            stop_reason=(
-                "empty_response"
-                if output_summary["empty_response"]
-                else finish_reason
-            ),
-            message=(
-                _empty_response_log_message(
+        if output_summary["empty_response"]:
+            _record_attempt(
+                account,
+                quota,
+                request_id,
+                attempt=current_attempt,
+                stream=False,
+                success=False,
+                stop_reason="empty_response",
+                message=_empty_response_log_message(
                     normalized_model_name,
                     disable_model=True,
-                )
-                if output_summary["empty_response"]
-                else "Gemini 上游请求完成"
-            ),
-            status_code=200,
-            input_tokens=int(usage["input_tokens"]),
-            output_tokens=int(usage["output_tokens"]),
-            empty_response=bool(output_summary["empty_response"]),
-            duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
-            level="warn" if output_summary["empty_response"] else None,
-            extra_fields={
-                "textChars": int(output_summary["text_chars"]),
-                "toolUseBlocks": int(output_summary["tool_use_blocks"]),
-                "imageBlocks": int(output_summary["image_blocks"]),
-            },
-        )
+                ),
+                status_code=200,
+                input_tokens=int(usage["input_tokens"]),
+                output_tokens=int(usage["output_tokens"]),
+                empty_response=True,
+                duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
+                level="warn",
+                extra_fields={
+                    "textChars": int(output_summary["text_chars"]),
+                    "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                    "imageBlocks": int(output_summary["image_blocks"]),
+                },
+            )
         usage_stats_store.record_message(
             account_id=account.id,
             model=normalized_model_name,

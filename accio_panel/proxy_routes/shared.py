@@ -193,32 +193,29 @@ def make_build_stream_attempt(
                 if empty_response
                 else str(summary.get("stop_reason") or config.default_stop_reason)
             )
-            record_attempt(
-                selected_account,
-                selected_quota,
-                selected_request_id,
-                attempt=selected_attempt,
-                stream=True,
-                success=not empty_response,
-                stop_reason=stop_reason,
-                message=(
-                    empty_response_log_message(
+            if empty_response:
+                record_attempt(
+                    selected_account,
+                    selected_quota,
+                    selected_request_id,
+                    attempt=selected_attempt,
+                    stream=True,
+                    success=False,
+                    stop_reason=stop_reason,
+                    message=empty_response_log_message(
                         config.model,
                         disable_model=config.disable_on_empty_response,
-                    )
-                    if empty_response
-                    else config.stream_complete_message
-                ),
-                status_code=200,
-                input_tokens=int(usage.get("input_tokens") or 0),
-                output_tokens=int(usage.get("output_tokens") or 0),
-                empty_response=empty_response,
-                duration_ms=int(
-                    (time.perf_counter() - selected_attempt_started_at) * 1000
-                ),
-                level="warn" if empty_response else None,
-                extra_fields=config.extra_fields_extractor(summary),
-            )
+                    ),
+                    status_code=200,
+                    input_tokens=int(usage.get("input_tokens") or 0),
+                    output_tokens=int(usage.get("output_tokens") or 0),
+                    empty_response=True,
+                    duration_ms=int(
+                        (time.perf_counter() - selected_attempt_started_at) * 1000
+                    ),
+                    level="warn",
+                    extra_fields=config.extra_fields_extractor(summary),
+                )
             cache_kwargs: dict[str, int] = {}
             for cache_field in config.cache_token_fields:
                 cache_kwargs[cache_field] = int(usage.get(cache_field) or 0)

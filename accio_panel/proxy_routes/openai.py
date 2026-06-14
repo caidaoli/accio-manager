@@ -588,38 +588,31 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
         if not output_summary["empty_response"]:
             _clear_account_sentinel_rate_limit(store, account)
 
-        _record_attempt(
-            account,
-            quota,
-            request_id,
-            attempt=current_attempt,
-            stream=False,
-            success=not bool(output_summary["empty_response"]),
-            stop_reason=(
-                "empty_response"
-                if output_summary["empty_response"]
-                else str(response_payload.get("stop_reason") or "end_turn")
-            ),
-            message=(
-                _empty_response_log_message(
+        if output_summary["empty_response"]:
+            _record_attempt(
+                account,
+                quota,
+                request_id,
+                attempt=current_attempt,
+                stream=False,
+                success=False,
+                stop_reason="empty_response",
+                message=_empty_response_log_message(
                     model,
                     disable_model=disable_on_empty_response,
-                )
-                if output_summary["empty_response"]
-                else "Responses 上游请求完成"
-            ),
-            status_code=200,
-            input_tokens=int(usage.get("input_tokens") or 0),
-            output_tokens=int(usage.get("output_tokens") or 0),
-            empty_response=bool(output_summary["empty_response"]),
-            duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
-            level="warn" if output_summary["empty_response"] else None,
-            extra_fields={
-                "textChars": int(output_summary["text_chars"]),
-                "toolUseBlocks": int(output_summary["tool_use_blocks"]),
-                "retryReason": None if current_attempt == 1 else current_retry_reason,
-            },
-        )
+                ),
+                status_code=200,
+                input_tokens=int(usage.get("input_tokens") or 0),
+                output_tokens=int(usage.get("output_tokens") or 0),
+                empty_response=True,
+                duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
+                level="warn",
+                extra_fields={
+                    "textChars": int(output_summary["text_chars"]),
+                    "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                    "retryReason": None if current_attempt == 1 else current_retry_reason,
+                },
+            )
         response_headers = {
             "x-accio-account-id": account.id,
             "x-accio-account-strategy": panel_settings.api_account_strategy,
@@ -1177,38 +1170,31 @@ def install_openai_routes(context: ProxyRouteContext) -> None:
         if not output_summary["empty_response"]:
             _clear_account_sentinel_rate_limit(store, account)
 
-        _record_attempt(
-            account,
-            quota,
-            request_id,
-            attempt=current_attempt,
-            stream=False,
-            success=not bool(output_summary["empty_response"]),
-            stop_reason=(
-                "empty_response"
-                if output_summary["empty_response"]
-                else str(response_payload.get("stop_reason") or "end_turn")
-            ),
-            message=(
-                _empty_response_log_message(
+        if output_summary["empty_response"]:
+            _record_attempt(
+                account,
+                quota,
+                request_id,
+                attempt=current_attempt,
+                stream=False,
+                success=False,
+                stop_reason="empty_response",
+                message=_empty_response_log_message(
                     model,
                     disable_model=disable_on_empty_response,
-                )
-                if output_summary["empty_response"]
-                else "OpenAI chat 上游请求完成"
-            ),
-            status_code=200,
-            input_tokens=int(usage.get("input_tokens") or 0),
-            output_tokens=int(usage.get("output_tokens") or 0),
-            empty_response=bool(output_summary["empty_response"]),
-            duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
-            level="warn" if output_summary["empty_response"] else None,
-            extra_fields={
-                "textChars": int(output_summary["text_chars"]),
-                "toolUseBlocks": int(output_summary["tool_use_blocks"]),
-                "retryReason": None if current_attempt == 1 else current_retry_reason,
-            },
-        )
+                ),
+                status_code=200,
+                input_tokens=int(usage.get("input_tokens") or 0),
+                output_tokens=int(usage.get("output_tokens") or 0),
+                empty_response=True,
+                duration_ms=int((time.perf_counter() - current_attempt_started_at) * 1000),
+                level="warn",
+                extra_fields={
+                    "textChars": int(output_summary["text_chars"]),
+                    "toolUseBlocks": int(output_summary["tool_use_blocks"]),
+                    "retryReason": None if current_attempt == 1 else current_retry_reason,
+                },
+            )
         response_headers = {
             "x-accio-account-id": account.id,
             "x-accio-account-strategy": panel_settings.api_account_strategy,

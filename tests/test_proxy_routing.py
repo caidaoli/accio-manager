@@ -958,7 +958,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 for item in _read_api_logs(settings)
                 if item.get("phase") == "upstream_attempt"
             ]
-            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(len(attempt_logs), 1)
             self.assertEqual(
                 [
                     (
@@ -972,7 +972,6 @@ class ProxyRoutingTests(unittest.TestCase):
                 ],
                 [
                     ("v1_chat_completions", 1, "acc-1", False, "empty_response"),
-                    ("v1_chat_completions", 2, "acc-2", True, "end_turn"),
                 ],
             )
 
@@ -1114,7 +1113,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 for item in _read_api_logs(settings)
                 if item.get("phase") == "upstream_attempt"
             ]
-            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(len(attempt_logs), 1)
             self.assertEqual(
                 [
                     (
@@ -1128,7 +1127,6 @@ class ProxyRoutingTests(unittest.TestCase):
                 ],
                 [
                     ("v1_responses", 1, "acc-1", False, "empty_response"),
-                    ("v1_responses", 2, "acc-2", True, "end_turn"),
                 ],
             )
 
@@ -1201,7 +1199,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 for item in _read_api_logs(settings)
                 if item.get("phase") == "upstream_attempt"
             ]
-            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(len(attempt_logs), 1)
             self.assertEqual(
                 [
                     (
@@ -1215,7 +1213,6 @@ class ProxyRoutingTests(unittest.TestCase):
                 ],
                 [
                     ("v1_messages", 1, "acc-1", False, "empty_response"),
-                    ("v1_messages", 2, "acc-2", True, "end_turn"),
                 ],
             )
 
@@ -1427,7 +1424,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 for item in _read_api_logs(settings)
                 if item.get("phase") == "upstream_attempt"
             ]
-            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(len(attempt_logs), 1)
             self.assertEqual(
                 [
                     (
@@ -1441,7 +1438,6 @@ class ProxyRoutingTests(unittest.TestCase):
                 ],
                 [
                     ("v1_chat_completions", 1, "acc-1", False, "upstream_turn_error"),
-                    ("v1_chat_completions", 2, "acc-2", True, "end_turn"),
                 ],
             )
 
@@ -1519,7 +1515,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 for item in _read_api_logs(settings)
                 if item.get("phase") == "upstream_attempt"
             ]
-            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(len(attempt_logs), 1)
             self.assertEqual(
                 [
                     (
@@ -1533,7 +1529,6 @@ class ProxyRoutingTests(unittest.TestCase):
                 ],
                 [
                     ("v1_messages", 1, "acc-1", False, "upstream_turn_error"),
-                    ("v1_messages", 2, "acc-2", True, "end_turn"),
                 ],
             )
 
@@ -1762,7 +1757,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 for item in _read_api_logs(settings)
                 if item.get("phase") == "upstream_attempt"
             ]
-            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(len(attempt_logs), 1)
             self.assertEqual(attempt_logs[0]["errorCode"], "429")
             self.assertEqual(
                 [
@@ -1777,7 +1772,6 @@ class ProxyRoutingTests(unittest.TestCase):
                 ],
                 [
                     ("v1_messages", 1, "acc-1", False, "upstream_turn_error"),
-                    ("v1_messages", 2, "acc-2", True, "end_turn"),
                 ],
             )
 
@@ -2430,7 +2424,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 for item in _read_api_logs(settings)
                 if item.get("phase") == "upstream_attempt"
             ]
-            self.assertEqual(len(attempt_logs), 2)
+            self.assertEqual(len(attempt_logs), 1)
             self.assertEqual(
                 [
                     (
@@ -2444,7 +2438,6 @@ class ProxyRoutingTests(unittest.TestCase):
                 ],
                 [
                     ("v1_responses", 1, "acc-1", False, "upstream_turn_error"),
-                    ("v1_responses", 2, "acc-2", True, "end_turn"),
                 ],
             )
 
@@ -2521,22 +2514,7 @@ class ProxyRoutingTests(unittest.TestCase):
                 for item in _read_api_logs(settings)
                 if item.get("phase") == "upstream_attempt"
             ]
-            self.assertEqual(len(attempt_logs), 1)
-            self.assertEqual(
-                [
-                    (
-                        item.get("event"),
-                        item.get("attempt"),
-                        item.get("accountId"),
-                        item.get("success"),
-                        item.get("stopReason"),
-                    )
-                    for item in attempt_logs
-                ],
-                [
-                    ("gemini_generate_content", 1, "acc-1", True, "STOP"),
-                ],
-            )
+            self.assertEqual(len(attempt_logs), 0)
 
     def test_anthropic_messages_route_converts_to_reqtxt_standard_body(self):
         with tempfile.TemporaryDirectory() as temp_dir:
