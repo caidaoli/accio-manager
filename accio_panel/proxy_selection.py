@@ -533,6 +533,7 @@ def _ordered_proxy_candidates_uncached(
         for account in store.list_accounts()
         if account.manual_enabled
         and not account.auto_disabled
+        and not _is_cached_quota_empty_cooldown(account)
         and not _is_sentinel_rate_limit_cooldown(account)
         and account.id not in excluded_ids
         and not _account_model_disabled_reason(
@@ -631,6 +632,15 @@ def _is_abnormal_recovery_cooldown(account: Account) -> bool:
     )
 
 
+def _is_cached_quota_empty_cooldown(account: Account) -> bool:
+    return (
+        account.manual_enabled
+        and not account.auto_disabled
+        and account.last_remaining_quota is not None
+        and account.last_remaining_quota <= 0
+    )
+
+
 def _mark_account_sentinel_rate_limited(
     store: AccountStore,
     account: Account,
@@ -719,6 +729,7 @@ def _model_cooldown_accounts(
             _is_upstream_quota_exhausted_cooldown(account)
             or _is_abnormal_recovery_cooldown(account)
             or _is_sentinel_rate_limit_cooldown(account)
+            or _is_cached_quota_empty_cooldown(account)
         )
         and not _account_model_disabled_reason(
             account,
@@ -963,6 +974,18 @@ def _select_proxy_account(
                 )
             elif account.last_remaining_quota is not None and account.last_remaining_quota <= 0:
                 errors.append(f"{account.name}: 剩余额度为 0%")
+
+    cooldown_accounts = _model_cooldown_accounts(
+        store,
+        model_name,
+        provider=provider,
+    )
+    if cooldown_accounts:
+        _raise_model_cooldown_error(
+            cooldown_accounts,
+            model_name,
+            provider=provider,
+        )
 
     raise ProxySelectionError(
         503,

@@ -774,6 +774,63 @@ class ProxyRoutingTests(unittest.TestCase):
             self.assertEqual(body["error"]["reset_seconds"], 1800)
             self.assertEqual(body["error"]["reset_time"], "30m")
 
+    def test_anthropic_messages_returns_model_cooldown_when_cached_quota_is_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_dir=Path(temp_dir), database_url="")
+
+            async def _noop_scheduler(_application):
+                return None
+
+            with patch("accio_panel.web.AccioClient", return_value=_FakeProxyClient({})):
+                with patch("accio_panel.proxy_routes.context._is_allowed_dynamic_model_impl", return_value=(True, [])):
+                    with patch("accio_panel.web._quota_scheduler_loop", _noop_scheduler):
+                        app = create_app(settings)
+
+            app.state.panel_settings_store.save(
+                PanelSettings(
+                    admin_password="admin",
+                    session_secret="test-session",
+                    api_account_strategy="fill",
+                )
+            )
+            app.state.store.save(
+                Account(
+                    id="acc-1",
+                    name="EsterUlloa442@gmail.com",
+                    access_token="token-1",
+                    refresh_token="refresh-1",
+                    utdid="utdid-1",
+                    last_remaining_quota=0,
+                    last_total_quota=100,
+                    next_quota_check_at=1_000_300,
+                    next_quota_check_reason="启用账号额度巡检",
+                )
+            )
+
+            with patch("accio_panel.proxy_selection._now_timestamp", return_value=1_000_000):
+                response, response_text = asyncio.run(
+                    _invoke_anthropic_messages_route(
+                        app,
+                        headers={"x-api-key": "admin"},
+                        payload={
+                            "model": "claude-sonnet-4-6",
+                            "max_tokens": 256,
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                    )
+                )
+
+            body = json.loads(response_text)
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(body["error"]["type"], "MODEL_COOLDOWN")
+            self.assertEqual(body["error"]["code"], "MODEL_COOLDOWN")
+            self.assertEqual(
+                body["error"]["message"],
+                "当前没有已启用账号可用于模型 claude-sonnet-4-6，请在 300 秒后重试。",
+            )
+            self.assertEqual(body["error"]["reset_seconds"], 300)
+            self.assertEqual(body["error"]["reset_time"], "5m")
+
     def test_mysql_gateway_roundtrip_includes_disabled_models_column(self):
         disabled_reason = "模型 claude-opus-4-6 出现空回复"
         row_cursor = _RecordingCursor(
