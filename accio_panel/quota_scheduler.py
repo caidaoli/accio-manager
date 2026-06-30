@@ -17,6 +17,13 @@ from .store import AccountStore
 SCHEDULER_TICK_SECONDS = QUOTA_SCHEDULER_TICK_SECONDS
 QUOTA_CHECK_BATCH_SIZE = 10
 QUOTA_CHECK_BATCH_INTERVAL_SECONDS = 2
+SCHEDULED_QUOTA_CHECK_REASONS = {
+    "额度查询失败后重试",
+    "额度查询失败后自动刷新 Token 并重试额度",
+    "上游 quota exhausted 后自动恢复重试",
+    "自动恢复重试",
+    "等待额度重置后自动恢复检查",
+}
 
 
 async def _run_quota_check_batch(
@@ -40,16 +47,34 @@ async def _run_quota_check_batch(
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _has_scheduled_quota_check(account: Account) -> bool:
+    return (
+        account.manual_enabled
+        and account.next_quota_check_at is not None
+        and str(account.next_quota_check_reason or "").strip()
+        in SCHEDULED_QUOTA_CHECK_REASONS
+    )
+
+
+def _has_due_scheduled_quota_check(account: Account, now_ts: int) -> bool:
+    return _has_scheduled_quota_check(account) and account.next_quota_check_at <= now_ts
+
+
+def _has_pending_abnormal_recovery_check(account: Account) -> bool:
+    return (
+        not account.manual_enabled
+        and bool(str(account.auto_disabled_reason or "").strip())
+        and account.next_quota_check_at is not None
+    )
+
+
 def _next_scheduler_sleep_seconds(store: AccountStore) -> int:
     now_ts = _now_timestamp()
     next_check_times = [
         int(account.next_quota_check_at)
         for account in store.list_accounts()
-        if account.next_quota_check_at is not None
-        and (
-            account.manual_enabled
-            or bool(str(account.auto_disabled_reason or "").strip())
-        )
+        if _has_scheduled_quota_check(account)
+        or _has_pending_abnormal_recovery_check(account)
     ]
     if not next_check_times:
         return SCHEDULER_TICK_SECONDS
@@ -64,19 +89,6 @@ async def _quota_scheduler_loop(application: FastAPI) -> None:
     client: AccioClient = application.state.client
     panel_settings_store: PanelSettingsStore = application.state.panel_settings_store
 
-    # 启动时分批重置账号巡检时间，避免惊群效应
-    # 策略：每批 10 个账号，间隔 2 秒，分散上游 API 压力
-    now_ts = _now_timestamp()
-    accounts = store.list_accounts()
-
-    for i, account in enumerate(accounts):
-        if account.next_quota_check_at is not None and account.next_quota_check_at > now_ts:
-            # 计算分散时间：第 0-9 个账号在 now，第 10-19 个在 now+2s，依此类推
-            batch_index = i // QUOTA_CHECK_BATCH_SIZE
-            stagger_offset = batch_index * QUOTA_CHECK_BATCH_INTERVAL_SECONDS
-            account.next_quota_check_at = now_ts + stagger_offset
-            store.save(account)
-
     while True:
         panel_settings = panel_settings_store.load()
         now_ts = _now_timestamp()
@@ -87,11 +99,8 @@ async def _quota_scheduler_loop(application: FastAPI) -> None:
 
         for account in accounts:
             if not account.manual_enabled:
-                # 异常禁用的账号：有 reason 且有调度时间，到期后尝试恢复
-                if (
-                    account.auto_disabled_reason
-                    and account.next_quota_check_at is not None
-                    and account.next_quota_check_at <= now_ts
+                if _has_pending_abnormal_recovery_check(account) and (
+                    account.next_quota_check_at <= now_ts
                 ):
                     abnormal_recovery_accounts.append(account)
                 elif (
@@ -106,7 +115,7 @@ async def _quota_scheduler_loop(application: FastAPI) -> None:
                     store.save(account)
                 continue
 
-            if account.next_quota_check_at is None or account.next_quota_check_at <= now_ts:
+            if _has_due_scheduled_quota_check(account, now_ts):
                 due_accounts.append(account)
 
         if due_accounts:

@@ -671,10 +671,10 @@
       </div>
 
       <div class="panel-switch">
-        <a class="switch-link {% if current_view == 'accounts' %}active{% endif %}" href="/dashboard?view=accounts&page=1&pageSize={{ page_size }}">账号列表</a>
-        <a class="switch-link {% if current_view == 'settings' %}active{% endif %}" href="/dashboard?view=settings&page=1&pageSize={{ page_size }}">配置中心</a>
-        <a class="switch-link {% if current_view == 'stats' %}active{% endif %}" href="/dashboard?view=stats&page=1&pageSize={{ page_size }}">统计界面</a>
-        <a class="switch-link {% if current_view == 'logs' %}active{% endif %}" href="/dashboard?view=logs&page=1&pageSize={{ page_size }}">日志界面</a>
+        <a class="switch-link {% if current_view == 'accounts' %}active{% endif %}" href="/dashboard?view=accounts&page=1&pageSize={{ page_size }}{{ status_filter_query }}">账号列表</a>
+        <a class="switch-link {% if current_view == 'settings' %}active{% endif %}" href="/dashboard?view=settings&page=1&pageSize={{ page_size }}{{ status_filter_query }}">配置中心</a>
+        <a class="switch-link {% if current_view == 'stats' %}active{% endif %}" href="/dashboard?view=stats&page=1&pageSize={{ page_size }}{{ status_filter_query }}">统计界面</a>
+        <a class="switch-link {% if current_view == 'logs' %}active{% endif %}" href="/dashboard?view=logs&page=1&pageSize={{ page_size }}{{ status_filter_query }}">日志界面</a>
         <a class="switch-link" href="https://github.com/caidaoli/accio-manager" target="_blank" rel="noreferrer">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right:6px;vertical-align:middle;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
           GitHub
@@ -686,7 +686,7 @@
       <a class="link-button primary" href="{{ oauth_url }}" target="_blank" rel="noreferrer">OAuth 登录页</a>
       <button class="button secondary" type="button" onclick="openImportDialog()">导入 JSON</button>
       <button class="button success" type="button" onclick="refreshAll()">刷新全部 Token</button>
-      <a class="link-button secondary" href="/dashboard?view={{ current_view }}&page={{ current_page }}&pageSize={{ page_size }}">刷新面板</a>
+      <a class="link-button secondary" href="/dashboard?view={{ current_view }}&page={{ current_page }}&pageSize={{ page_size }}{{ status_filter_query }}">刷新面板</a>
       <button class="button secondary" type="button" onclick="logoutAdmin()">退出登录</button>
     </section>
 
@@ -904,12 +904,12 @@
         </div>
         <div class="actions">
           <button class="button primary" type="button" onclick="saveSettings()">保存配置</button>
-          <a class="link-button secondary" href="/dashboard?view=accounts&page=1&pageSize={{ page_size }}">返回账号区域</a>
+          <a class="link-button secondary" href="/dashboard?view=accounts&page=1&pageSize={{ page_size }}{{ status_filter_query }}">返回账号区域</a>
         </div>
       </div>
-      {% elif accounts %}
+      {% elif current_view == "accounts" %}
       <div class="table-controls">
-        <div class="meta">当前显示第 {{ current_page }} / {{ total_pages }} 页，账号 {{ page_start_index }} - {{ page_end_index }} / {{ account_count }}</div>
+        <div class="meta">当前显示第 {{ current_page }} / {{ total_pages }} 页，账号 {{ page_start_index }} - {{ page_end_index }} / {{ filtered_account_count }}</div>
         <label class="meta">
           每页显示
           <select id="page-size-select" class="inline-select" onchange="changePageSize()">
@@ -926,6 +926,14 @@
           全选当前页
         </label>
         <div class="batch-label">已选 <span id="selected-count">0</span> 个账号</div>
+        <label class="meta">
+          状态
+          <select id="status-filter-select" class="inline-select" onchange="changeStatusFilter()">
+            {% for option in account_status_filter_options %}
+            <option value="{{ option.value }}" {% if option.value == status_filter %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
         <button class="action" type="button" onclick="runBatchAction('refresh_token')">批量刷新 Token</button>
         <button class="action" type="button" onclick="runBatchAction('refresh_quota')">批量刷新额度</button>
         <button class="action" type="button" onclick="runBatchAction('enable')">批量启用</button>
@@ -934,6 +942,7 @@
         <button class="action danger" type="button" onclick="runBatchAction('delete', true)">批量删除</button>
       </div>
 
+      {% if accounts %}
       <table>
         <thead>
           <tr>
@@ -1012,13 +1021,13 @@
       <div class="pager">
         <div class="meta">共 {{ total_pages }} 页</div>
         <div class="pager-links">
-          <a class="page-link" href="/dashboard?view=accounts&page=1&pageSize={{ page_size }}">首页</a>
-          <a class="page-link" href="/dashboard?view=accounts&page={{ 1 if current_page <= 1 else current_page - 1 }}&pageSize={{ page_size }}">上一页</a>
+          <a class="page-link" href="/dashboard?view=accounts&page=1&pageSize={{ page_size }}{{ status_filter_query }}">首页</a>
+          <a class="page-link" href="/dashboard?view=accounts&page={{ 1 if current_page <= 1 else current_page - 1 }}&pageSize={{ page_size }}{{ status_filter_query }}">上一页</a>
           {% for number in page_numbers %}
-          <a class="page-link {% if number == current_page %}active{% endif %}" href="/dashboard?view=accounts&page={{ number }}&pageSize={{ page_size }}">{{ number }}</a>
+          <a class="page-link {% if number == current_page %}active{% endif %}" href="/dashboard?view=accounts&page={{ number }}&pageSize={{ page_size }}{{ status_filter_query }}">{{ number }}</a>
           {% endfor %}
-          <a class="page-link" href="/dashboard?view=accounts&page={{ total_pages if current_page >= total_pages else current_page + 1 }}&pageSize={{ page_size }}">下一页</a>
-          <a class="page-link" href="/dashboard?view=accounts&page={{ total_pages }}&pageSize={{ page_size }}">末页</a>
+          <a class="page-link" href="/dashboard?view=accounts&page={{ total_pages if current_page >= total_pages else current_page + 1 }}&pageSize={{ page_size }}{{ status_filter_query }}">下一页</a>
+          <a class="page-link" href="/dashboard?view=accounts&page={{ total_pages }}&pageSize={{ page_size }}{{ status_filter_query }}">末页</a>
           <span class="page-jump">
             <input id="page-jump-input" class="page-jump-input" type="number" min="1" max="{{ total_pages }}" placeholder="{{ current_page }}"
               onkeydown="if(event.key==='Enter')jumpToPage()">
@@ -1028,9 +1037,15 @@
       </div>
       {% else %}
       <div class="empty">
+        {% if account_count %}
+        <div style="font-size: 18px; font-weight: 700; margin-bottom: 8px;">没有符合条件的账号</div>
+        <div>调整状态过滤条件后再试。</div>
+        {% else %}
         <div style="font-size: 18px; font-weight: 700; margin-bottom: 8px;">还没有账号</div>
         <div>点击上方“打开登录页”完成授权，回调成功后会自动出现在这里。</div>
+        {% endif %}
       </div>
+      {% endif %}
       {% endif %}
     </section>
   </main>
@@ -1226,6 +1241,29 @@
       url.searchParams.set('view', 'accounts');
       url.searchParams.set('page', '1');
       url.searchParams.set('pageSize', select.value);
+      const statusFilter = '{{ status_filter }}';
+      if (statusFilter && statusFilter !== 'all') {
+        url.searchParams.set('status', statusFilter);
+      } else {
+        url.searchParams.delete('status');
+      }
+      window.location.href = url.toString();
+    }
+
+    function changeStatusFilter() {
+      const select = document.getElementById('status-filter-select');
+      if (!select) {
+        return;
+      }
+      const url = new URL(window.location.href);
+      url.searchParams.set('view', 'accounts');
+      url.searchParams.set('page', '1');
+      url.searchParams.set('pageSize', '{{ page_size }}');
+      if (select.value && select.value !== 'all') {
+        url.searchParams.set('status', select.value);
+      } else {
+        url.searchParams.delete('status');
+      }
       window.location.href = url.toString();
     }
 
@@ -1242,6 +1280,12 @@
       url.searchParams.set('view', 'accounts');
       url.searchParams.set('page', String(page));
       url.searchParams.set('pageSize', '{{ page_size }}');
+      const statusFilter = '{{ status_filter }}';
+      if (statusFilter && statusFilter !== 'all') {
+        url.searchParams.set('status', statusFilter);
+      } else {
+        url.searchParams.delete('status');
+      }
       window.location.href = url.toString();
     }
 

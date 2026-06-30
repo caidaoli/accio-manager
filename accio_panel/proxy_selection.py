@@ -21,13 +21,12 @@ from .store import AccountStore
 from .utils import format_timestamp, mask_token
 
 
-ENABLED_ACCOUNT_CHECK_INTERVAL_SECONDS = 15 * 60
 FAILED_ACCOUNT_RETRY_SECONDS = 5 * 60
-MODEL_COOLDOWN_MIN_SECONDS = FAILED_ACCOUNT_RETRY_SECONDS
+MODEL_COOLDOWN_RESET_SECONDS = 30 * 60
 QUOTA_SCHEDULER_TICK_SECONDS = 30
 RECOVERY_CHECK_BUFFER_SECONDS = 90
 ABNORMAL_ACCOUNT_RECOVERY_INTERVAL_SECONDS = 30 * 60
-UPSTREAM_QUOTA_EXHAUSTED_MAX_WAIT_SECONDS = 30 * 60
+UPSTREAM_QUOTA_EXHAUSTED_MAX_WAIT_SECONDS = 60 * 60
 UPSTREAM_QUOTA_EXHAUSTED_AUTO_DISABLED_REASON = (
     "上游返回 [429]: quota exhausted，系统已暂时跳过该账号并等待自动恢复重试。"
 )
@@ -739,24 +738,8 @@ def _model_cooldown_accounts(
     ]
 
 
-def _cooldown_reset_seconds(accounts: list[Account]) -> int:
-    now_ts = _now_timestamp()
-    reset_values = [
-        max(
-            MODEL_COOLDOWN_MIN_SECONDS,
-            int(account.next_quota_check_at or 0) - now_ts,
-        )
-        for account in accounts
-        if account.next_quota_check_at is not None
-    ]
-    reset_values.extend(
-        max(1, int(account.sentinel_rate_limited_until or 0) - now_ts)
-        for account in accounts
-        if _is_sentinel_rate_limit_cooldown(account)
-    )
-    if not reset_values:
-        return MODEL_COOLDOWN_MIN_SECONDS
-    return min(reset_values)
+def _cooldown_reset_seconds(_accounts: list[Account]) -> int:
+    return MODEL_COOLDOWN_RESET_SECONDS
 
 
 def _raise_model_cooldown_error(
@@ -1181,7 +1164,7 @@ def _plan_next_quota_check(
             )
         return now_ts + FAILED_ACCOUNT_RETRY_SECONDS, "自动恢复重试"
 
-    return now_ts + ENABLED_ACCOUNT_CHECK_INTERVAL_SECONDS, "启用账号额度巡检"
+    return None, None
 
 
 def _apply_quota_result(

@@ -6,14 +6,17 @@ from unittest.mock import patch
 from accio_panel.app_settings import PanelSettings
 from accio_panel.models import Account
 from accio_panel.proxy_selection import (
+    MODEL_COOLDOWN_ERROR_CODE,
+    ProxySelectionError,
     SENTINEL_RATE_LIMIT_INITIAL_SECONDS,
     SENTINEL_RATE_LIMIT_MAX_SECONDS,
     UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON,
-    _mark_account_sentinel_rate_limited,
     _clear_account_sentinel_rate_limit,
+    _mark_account_sentinel_rate_limited,
     _ordered_proxy_candidates_uncached,
     _plan_next_quota_check,
     _query_quota_with_refresh_fallback,
+    _raise_model_cooldown_error,
 )
 from accio_panel.quota_scheduler import _quota_scheduler_loop
 
@@ -236,7 +239,7 @@ class ProxySelectionTests(unittest.TestCase):
             now_ts=1_000_000,
         )
 
-        self.assertEqual(next_check_at, 1_001_800)
+        self.assertEqual(next_check_at, 1_003_600)
         self.assertEqual(reason, UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON)
 
     def test_quota_exhausted_recovery_keeps_near_billing_retry_time(self):
@@ -261,9 +264,73 @@ class ProxySelectionTests(unittest.TestCase):
         self.assertEqual(next_check_at, 1_000_390)
         self.assertEqual(reason, UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON)
 
+    def test_successful_enabled_account_quota_check_clears_next_schedule(self):
+        account = Account(
+            id="acc-1",
+            name="账号1",
+            access_token="access-1",
+            refresh_token="refresh-1",
+            utdid="utdid-1",
+        )
+
+        next_check_at, reason = _plan_next_quota_check(
+            account,
+            quota_success=True,
+            next_billing_at=None,
+            panel_settings=PanelSettings(),
+            now_ts=1_000_000,
+        )
+
+        self.assertIsNone(next_check_at)
+        self.assertIsNone(reason)
+
+    def test_failed_enabled_account_quota_check_retries_after_five_minutes(self):
+        account = Account(
+            id="acc-1",
+            name="账号1",
+            access_token="access-1",
+            refresh_token="refresh-1",
+            utdid="utdid-1",
+        )
+
+        next_check_at, reason = _plan_next_quota_check(
+            account,
+            quota_success=False,
+            next_billing_at=None,
+            panel_settings=PanelSettings(),
+            now_ts=1_000_000,
+        )
+
+        self.assertEqual(next_check_at, 1_000_300)
+        self.assertEqual(reason, "额度查询失败后重试")
+
+    def test_model_cooldown_error_reports_thirty_minutes(self):
+        account = Account(
+            id="acc-1",
+            name="账号1",
+            access_token="access-1",
+            refresh_token="refresh-1",
+            utdid="utdid-1",
+            auto_disabled=True,
+            next_quota_check_at=1_000_300,
+            next_quota_check_reason=UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON,
+        )
+
+        with (
+            patch("accio_panel.proxy_selection._now_timestamp", return_value=1_000_000),
+            self.assertRaises(ProxySelectionError) as raised,
+        ):
+            _raise_model_cooldown_error([account], "claude-sonnet-4-6")
+
+        error = raised.exception
+        self.assertEqual(error.status_code, 429)
+        self.assertEqual(error.code, MODEL_COOLDOWN_ERROR_CODE)
+        self.assertEqual(error.reset_seconds, 1_800)
+        self.assertEqual(error.reset_time, "30m")
+
 
 class QuotaSchedulerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_scheduler_limits_due_account_checks_to_startup_batch_size(self):
+    async def test_scheduler_does_not_query_normal_enabled_accounts_on_startup(self):
         accounts = [
             Account(
                 id=f"acc-{index}",
@@ -289,7 +356,7 @@ class QuotaSchedulerTests(unittest.IsolatedAsyncioTestCase):
             calls.append(account.id)
             return account, {"success": True, "message": ""}
 
-        async def stop_after_first_tick(_: float):
+        async def stop_after_first_sleep(_: float):
             raise _StopScheduler()
 
         with (
@@ -298,14 +365,54 @@ class QuotaSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "accio_panel.quota_scheduler._query_quota_with_refresh_fallback",
                 side_effect=fake_query_quota_with_refresh_fallback,
             ),
-            patch("accio_panel.quota_scheduler.asyncio.sleep", side_effect=stop_after_first_tick),
+            patch("accio_panel.quota_scheduler.asyncio.sleep", side_effect=stop_after_first_sleep),
         ):
             with self.assertRaises(_StopScheduler):
                 await _quota_scheduler_loop(application)
 
-        self.assertEqual(calls, [f"acc-{index}" for index in range(10)])
+        self.assertEqual(calls, [])
 
-    async def test_scheduler_sleeps_until_next_startup_stagger_batch(self):
+    async def test_scheduler_queries_due_enabled_retry_records(self):
+        account = Account(
+            id="acc-1",
+            name="账号1",
+            access_token="access-1",
+            refresh_token="refresh-1",
+            utdid="utdid-1",
+            manual_enabled=True,
+            next_quota_check_at=1_000_000,
+            next_quota_check_reason="额度查询失败后重试",
+        )
+        application = SimpleNamespace(
+            state=SimpleNamespace(
+                store=_InMemoryStore([account]),
+                client=object(),
+                panel_settings_store=_FixedPanelSettingsStore(PanelSettings()),
+            )
+        )
+        calls: list[str] = []
+
+        def fake_query_quota_with_refresh_fallback(_store, _client, account, _settings):
+            calls.append(account.id)
+            return account, {"success": True, "message": ""}
+
+        async def stop_after_first_sleep(_: float):
+            raise _StopScheduler()
+
+        with (
+            patch("accio_panel.quota_scheduler._now_timestamp", return_value=1_000_000),
+            patch(
+                "accio_panel.quota_scheduler._query_quota_with_refresh_fallback",
+                side_effect=fake_query_quota_with_refresh_fallback,
+            ),
+            patch("accio_panel.quota_scheduler.asyncio.sleep", side_effect=stop_after_first_sleep),
+        ):
+            with self.assertRaises(_StopScheduler):
+                await _quota_scheduler_loop(application)
+
+        self.assertEqual(calls, ["acc-1"])
+
+    async def test_scheduler_ignores_future_normal_enabled_checks_when_sleeping(self):
         accounts = [
             Account(
                 id=f"acc-{index}",
@@ -350,8 +457,8 @@ class QuotaSchedulerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(_StopScheduler):
                 await _quota_scheduler_loop(application)
 
-        self.assertEqual(calls, [f"acc-{index}" for index in range(10)])
-        self.assertEqual(sleeps, [2])
+        self.assertEqual(calls, [])
+        self.assertEqual(sleeps, [30])
 
     async def test_scheduler_recovery_uses_same_quota_refresh_path_for_abnormal_accounts(
         self,

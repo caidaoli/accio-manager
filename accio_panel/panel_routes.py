@@ -24,9 +24,12 @@ from .api_logs import ApiLogStore
 from .client import AccioClient
 from .config import Settings
 from .dashboard_views import (
+    ACCOUNT_STATUS_FILTER_OPTIONS,
     PAGE_SIZE_OPTIONS,
     _build_dashboard_items,
+    _filter_accounts_by_status,
     _build_page_numbers,
+    _parse_account_status_filter,
     _parse_dashboard_view,
     _parse_page_number,
     _parse_page_size,
@@ -104,10 +107,13 @@ def register_panel_routes(
             )
 
         current_view = _parse_dashboard_view(request.query_params.get("view"))
+        status_filter = _parse_account_status_filter(request.query_params.get("status"))
         page_size = _parse_page_size(request.query_params.get("pageSize"))
         requested_page = _parse_page_number(request.query_params.get("page"))
         all_accounts = store.list_accounts()
         account_count = len(all_accounts)
+        filtered_accounts = _filter_accounts_by_status(all_accounts, status_filter)
+        filtered_account_count = len(filtered_accounts)
         enabled_accounts = [
             a for a in all_accounts
             if a.manual_enabled and not a.auto_disabled
@@ -123,11 +129,19 @@ def register_panel_routes(
             if enabled_quota_values
             else None
         )
-        total_pages = max(1, ((account_count - 1) // page_size) + 1) if account_count else 1
+        total_pages = (
+            max(1, ((filtered_account_count - 1) // page_size) + 1)
+            if filtered_account_count
+            else 1
+        )
         current_page = min(requested_page, total_pages)
         page_start = (current_page - 1) * page_size
         page_end = page_start + page_size
-        page_accounts = all_accounts[page_start:page_end] if current_view == "accounts" else []
+        page_accounts = (
+            filtered_accounts[page_start:page_end]
+            if current_view == "accounts"
+            else []
+        )
         model_catalog, model_catalog_source = _load_dynamic_model_catalog(
             application,
             panel_settings,
@@ -147,6 +161,7 @@ def register_panel_routes(
                 "page_title": "Accio 多账号管理面板",
                 "accounts": dashboard_items,
                 "account_count": account_count,
+                "filtered_account_count": filtered_account_count,
                 "enabled_account_count": enabled_account_count,
                 "total_remaining_quota": total_remaining_quota,
                 "callback_url": callback_url,
@@ -168,6 +183,11 @@ def register_panel_routes(
                 ),
                 "current_view": current_view,
                 "current_page": current_page,
+                "status_filter": status_filter,
+                "account_status_filter_options": ACCOUNT_STATUS_FILTER_OPTIONS,
+                "status_filter_query": (
+                    f"&status={status_filter}" if status_filter != "all" else ""
+                ),
                 "page_size": page_size,
                 "page_size_options": PAGE_SIZE_OPTIONS,
                 "total_pages": total_pages,
@@ -1091,4 +1111,3 @@ def register_panel_routes(
                 status_code=404,
             )
         return JSONResponse({"success": True, "message": "账号已删除"})
-

@@ -8,6 +8,16 @@ from .utils import format_timestamp, mask_token
 
 PAGE_SIZE_OPTIONS = (10, 20, 50)
 DEFAULT_PAGE_SIZE = PAGE_SIZE_OPTIONS[0]
+ACCOUNT_STATUS_FILTER_OPTIONS = (
+    {"value": "all", "label": "全部状态"},
+    {"value": "enabled", "label": "已启用"},
+    {"value": "manual_disabled", "label": "手动禁用"},
+    {"value": "auto_disabled", "label": "自动禁用"},
+    {"value": "abnormal_disabled", "label": "异常禁用"},
+)
+ACCOUNT_STATUS_FILTER_VALUES = frozenset(
+    item["value"] for item in ACCOUNT_STATUS_FILTER_OPTIONS
+)
 
 
 def _parse_dashboard_view(value: str | None) -> str:
@@ -35,6 +45,44 @@ def _parse_page_number(value: str | None) -> int:
     except (TypeError, ValueError):
         return 1
     return max(1, page_number)
+
+
+def _parse_account_status_filter(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in ACCOUNT_STATUS_FILTER_VALUES else "all"
+
+
+def _filter_accounts_by_status(
+    accounts: list[Account],
+    status_filter: str,
+) -> list[Account]:
+    if status_filter == "enabled":
+        return [
+            account
+            for account in accounts
+            if account.manual_enabled and not account.auto_disabled
+        ]
+    if status_filter == "manual_disabled":
+        return [
+            account
+            for account in accounts
+            if not account.manual_enabled
+            and not str(account.auto_disabled_reason or "").strip()
+        ]
+    if status_filter == "auto_disabled":
+        return [
+            account
+            for account in accounts
+            if account.manual_enabled and account.auto_disabled
+        ]
+    if status_filter == "abnormal_disabled":
+        return [
+            account
+            for account in accounts
+            if not account.manual_enabled
+            and str(account.auto_disabled_reason or "").strip()
+        ]
+    return list(accounts)
 
 
 def _build_page_numbers(current_page: int, total_pages: int) -> list[int]:

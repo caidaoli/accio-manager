@@ -658,15 +658,15 @@ class ProxyRoutingTests(unittest.TestCase):
                     "error": {
                         "type": "MODEL_COOLDOWN",
                         "code": "MODEL_COOLDOWN",
-                        "message": "当前没有已启用账号可用于模型 claude-sonnet-4-6，请在 300 秒后重试。",
+                        "message": "当前没有已启用账号可用于模型 claude-sonnet-4-6，请在 1800 秒后重试。",
                         "model": "claude-sonnet-4-6",
-                        "reset_seconds": 300,
-                        "reset_time": "5m",
+                        "reset_seconds": 1800,
+                        "reset_time": "30m",
                     },
                 },
             )
 
-    def test_model_cooldown_reset_seconds_is_at_least_retry_interval(self):
+    def test_model_cooldown_reset_seconds_is_thirty_minutes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = Settings(data_dir=Path(temp_dir), database_url="")
 
@@ -714,8 +714,8 @@ class ProxyRoutingTests(unittest.TestCase):
 
             body = json.loads(response_text)
             self.assertEqual(response.status_code, 429)
-            self.assertEqual(body["error"]["reset_seconds"], 300)
-            self.assertEqual(body["error"]["reset_time"], "5m")
+            self.assertEqual(body["error"]["reset_seconds"], 1800)
+            self.assertEqual(body["error"]["reset_time"], "30m")
 
     def test_model_cooldown_uses_abnormal_recovery_check_time(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -826,10 +826,10 @@ class ProxyRoutingTests(unittest.TestCase):
             self.assertEqual(body["error"]["code"], "MODEL_COOLDOWN")
             self.assertEqual(
                 body["error"]["message"],
-                "当前没有已启用账号可用于模型 claude-sonnet-4-6，请在 300 秒后重试。",
+                "当前没有已启用账号可用于模型 claude-sonnet-4-6，请在 1800 秒后重试。",
             )
-            self.assertEqual(body["error"]["reset_seconds"], 300)
-            self.assertEqual(body["error"]["reset_time"], "5m")
+            self.assertEqual(body["error"]["reset_seconds"], 1800)
+            self.assertEqual(body["error"]["reset_time"], "30m")
 
     def test_mysql_gateway_roundtrip_includes_disabled_models_column(self):
         disabled_reason = "模型 claude-opus-4-6 出现空回复"
