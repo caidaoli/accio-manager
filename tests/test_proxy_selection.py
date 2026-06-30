@@ -13,6 +13,7 @@ from accio_panel.proxy_selection import (
     _clear_account_sentinel_rate_limit,
     _ordered_proxy_candidates_uncached,
     _plan_next_quota_check,
+    _query_quota_with_refresh_fallback,
 )
 from accio_panel.quota_scheduler import _quota_scheduler_loop
 
@@ -37,6 +38,23 @@ class _InMemoryStore:
                 break
         return account
 
+    def update_tokens(
+        self,
+        account_id: str,
+        *,
+        access_token: str,
+        refresh_token: str,
+        expires_at,
+    ) -> Account | None:
+        account = self.get_account(account_id)
+        if not account:
+            return None
+        account.access_token = access_token
+        account.refresh_token = refresh_token
+        account.expires_at = expires_at
+        self.save(account)
+        return account
+
 
 class _FixedPanelSettingsStore:
     def __init__(self, settings: PanelSettings):
@@ -51,6 +69,68 @@ class _StopScheduler(Exception):
 
 
 class ProxySelectionTests(unittest.TestCase):
+    def test_quota_exhausted_recovery_refreshes_token_before_accepting_empty_quota(
+        self,
+    ):
+        account = Account(
+            id="acc-1",
+            name="账号1",
+            access_token="old-access",
+            refresh_token="old-refresh",
+            utdid="utdid-1",
+            auto_disabled=True,
+            auto_disabled_reason="上游返回 [429]: quota exhausted",
+            next_quota_check_at=1_000_000,
+            next_quota_check_reason=UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON,
+        )
+        store = _InMemoryStore([account])
+        client = SimpleNamespace()
+        quota_tokens: list[str] = []
+        refreshed_tokens: list[str] = []
+
+        def query_quota(account: Account, *, proxy_url=None):
+            quota_tokens.append(account.access_token)
+            if account.access_token == "old-access":
+                return {
+                    "success": True,
+                    "data": {"remaining": 0, "total": 20},
+                }
+            return {
+                "success": True,
+                "data": {"remaining": 20, "total": 20},
+            }
+
+        def refresh_token(account: Account, *, proxy_url=None):
+            refreshed_tokens.append(account.refresh_token)
+            return {
+                "success": True,
+                "data": {
+                    "accessToken": "new-access",
+                    "refreshToken": "new-refresh",
+                    "expiresAt": 2_000_000,
+                },
+            }
+
+        client.query_quota = query_quota
+        client.refresh_token = refresh_token
+
+        with patch("accio_panel.proxy_selection._now_timestamp", return_value=1_000_000):
+            updated, quota = _query_quota_with_refresh_fallback(
+                store,
+                client,
+                account,
+                PanelSettings(auto_enable_on_recovered_quota=False),
+            )
+
+        self.assertEqual(quota_tokens, ["old-access", "new-access"])
+        self.assertEqual(refreshed_tokens, ["old-refresh"])
+        self.assertEqual(updated.access_token, "new-access")
+        self.assertEqual(updated.refresh_token, "new-refresh")
+        self.assertFalse(updated.auto_disabled)
+        self.assertIsNone(updated.auto_disabled_reason)
+        self.assertEqual(updated.last_remaining_quota, 20)
+        self.assertEqual(quota["remaining_text"], "20/20")
+
     def test_sentinel_rate_limit_cooldown_exponentially_backs_off_and_filters_candidates(self):
         account = Account(
             id="acc-1",

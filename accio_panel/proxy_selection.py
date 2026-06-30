@@ -796,11 +796,31 @@ def _query_quota_with_refresh_fallback(
     quota_result = _query_quota(client, account, panel_settings)
     if not account.manual_enabled:
         return _apply_quota_result(store, account, quota_result, panel_settings)
+    quota_exhausted_recovery = False
     if quota_result.get("success"):
-        return _apply_quota_result(store, account, quota_result, panel_settings)
+        quota = _build_quota_view(quota_result)
+        quota_exhausted_recovery = (
+            _is_upstream_quota_exhausted_cooldown(account)
+            and quota["remaining_value"] <= 0
+        )
+        if not quota_exhausted_recovery:
+            return _apply_quota_result(store, account, quota_result, panel_settings)
 
     refresh_result = _refresh_token(client, account, panel_settings)
     if not refresh_result.get("success"):
+        if quota_exhausted_recovery:
+            account, quota = _apply_quota_result(
+                store,
+                account,
+                quota_result,
+                panel_settings,
+            )
+            refresh_message = str(refresh_result.get("message") or "刷新失败").strip()
+            quota["message"] = (
+                f"上游 quota exhausted 恢复前 Token 刷新失败：{refresh_message}"
+            )
+            return account, quota
+
         reason = (
             "额度查询失败，且 Token 刷新失败："
             f"{refresh_result.get('message') or '刷新失败'}。系统已自动禁用该账号，请手动处理。"
@@ -819,19 +839,32 @@ def _query_quota_with_refresh_fallback(
     )
     if updated_account:
         updated_account.next_quota_check_at = _now_timestamp()
-        updated_account.next_quota_check_reason = "额度查询失败后自动刷新 Token 并重试额度"
+        if quota_exhausted_recovery:
+            updated_account.next_quota_check_reason = (
+                UPSTREAM_QUOTA_EXHAUSTED_RECOVERY_REASON
+            )
+        else:
+            updated_account.next_quota_check_reason = "额度查询失败后自动刷新 Token 并重试额度"
         store.save(updated_account)
         account = updated_account
 
     retried_quota_result = _query_quota(client, account, panel_settings)
     account, quota = _apply_quota_result(store, account, retried_quota_result, panel_settings)
     if quota["success"]:
-        quota["message"] = quota["message"] or "额度查询失败后已自动刷新 Token 并恢复。"
+        quota["message"] = quota["message"] or (
+            "上游 quota exhausted 后已自动刷新 Token 并恢复。"
+            if quota_exhausted_recovery
+            else "额度查询失败后已自动刷新 Token 并恢复。"
+        )
     else:
         retry_message = str(quota.get("message") or "").strip()
+        message_prefix = (
+            "上游 quota exhausted 后已自动刷新 Token 并重试，但额度查询仍失败。"
+            if quota_exhausted_recovery
+            else "额度查询失败，已自动刷新 Token 并重试，但额度查询仍失败。"
+        )
         quota["message"] = (
-            "额度查询失败，已自动刷新 Token 并重试，但额度查询仍失败。"
-            + (f" {retry_message}" if retry_message else "")
+            message_prefix + (f" {retry_message}" if retry_message else "")
         ).strip()
     return account, quota
 
